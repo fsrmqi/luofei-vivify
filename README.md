@@ -102,7 +102,7 @@ xattr -dr com.apple.quarantine "/Applications/Flow 2 Keymap.app"
 
 `Dockerfile` 与 `compose.yaml` 只适合把页面放到容器里。`VIVIFY_CONTAINER=1` 时进程不打开 HID，而是把接口转发到 `http://host.docker.internal:4312`（Docker Desktop、OrbStack 一类环境提供这个主机名）。键盘通信仍要在 macOS 宿主机上先运行 `pnpm start`。
 
-`compose.yaml` 发布 `127.0.0.1:4313` 到容器的 4313。服务默认监听 `VIVIFY_PORT`，未设置时是 4312。日常改键直接用上面的 macOS 命令。
+`compose.yaml` 把 `127.0.0.1:4313` 映射到容器的 4313。`VIVIFY_CONTAINER=1` 时进程监听 4313。宿主机上的 `pnpm start` 仍只监听 `127.0.0.1`，端口来自 `VIVIFY_PORT`，未设置时是 4312。日常改键直接用上面的 macOS 命令。
 
 ## 许可
 
