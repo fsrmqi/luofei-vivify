@@ -1,10 +1,12 @@
-import { buildLayout, cellIndex, choices, deviceBindings, editId, hex, isCode, isSnapshot, mediaLabels, previewLayerCount } from './keyboard.js';
+import { buildLayout, categories, cellIndex, choices, deviceBindings, editId, hex, isCode, isSnapshot, mediaLabels, previewLayerCount } from './keyboard.js';
 
 const byId = id => document.getElementById(id);
 const storageKey = 'vivify.oe927.v1';
 const state = {
   snapshot: null, edits: new Map(), history: [], finish: 'silver',
-  connected: false, busy: false, message: '', layer: 0, selected: '3,0'
+  connected: false, busy: false, message: '', layer: 0, selected: '3,0',
+  category: 'basic',
+  test: false, tested: new Set(), pressed: null
 };
 
 try {
@@ -247,17 +249,84 @@ async function importSnapshot(file) {
   render();
 }
 
+// 浏览器 KeyboardEvent.code 到键值的映射；字母、数字、功能键按区间推导。
+const browserCodes = {
+  Escape: 0x29, Enter: 0x28, Tab: 0x2b, Space: 0x2c, Backspace: 0x2a,
+  Minus: 0x2d, Equal: 0x2e, BracketLeft: 0x2f, BracketRight: 0x30,
+  Backslash: 0x31, Semicolon: 0x33, Quote: 0x34, Backquote: 0x35,
+  Comma: 0x36, Period: 0x37, Slash: 0x38, CapsLock: 0x39,
+  Insert: 0x49, Home: 0x4a, PageUp: 0x4b, Delete: 0x4c, End: 0x4d, PageDown: 0x4e,
+  ArrowRight: 0x4f, ArrowLeft: 0x50, ArrowDown: 0x51, ArrowUp: 0x52,
+  NumLock: 0x53, NumpadDivide: 0x54, NumpadMultiply: 0x55, NumpadSubtract: 0x56,
+  NumpadAdd: 0x57, NumpadEnter: 0x58, NumpadDecimal: 0x63, NumpadEqual: 0x67,
+  PrintScreen: 0x46, ScrollLock: 0x47, Pause: 0x48,
+  ShiftLeft: 0xe1, ShiftRight: 0xe5, ControlLeft: 0xe0, ControlRight: 0xe4,
+  AltLeft: 0xe2, AltRight: 0xe6, MetaLeft: 0xe3, MetaRight: 0xe7
+};
+
+function keycodeOf(event) {
+  const { code } = event;
+  if (/^Key[A-Z]$/.test(code)) return 0x04 + code.charCodeAt(3) - 65;
+  if (/^Digit[0-9]$/.test(code)) return code === 'Digit0' ? 0x27 : 0x1e + Number(code.slice(5)) - 1;
+  if (/^F([1-9]|1[0-2])$/.test(code)) return 0x3a + Number(code.slice(1)) - 1;
+  if (/^Numpad[0-9]$/.test(code)) return code === 'Numpad0' ? 0x62 : 0x59 + Number(code.slice(6)) - 1;
+  return browserCodes[code];
+}
+
+// 找出当前层里实际输出该键值的物理键。
+function keysProducing(keycode) {
+  return [...keys.values()].filter(key => actualValue(key) === keycode);
+}
+
+function handleTestKey(event, down) {
+  if (!state.test) return;
+  const keycode = keycodeOf(event);
+  if (keycode === undefined) return;
+  // 测试态下接管按键，避免 Tab 切焦点、空格滚页干扰观察。
+  event.preventDefault();
+  if (!down) {
+    state.pressed = null;
+    render();
+    return;
+  }
+  const targets = keysProducing(keycode);
+  state.pressed = keycode;
+  for (const key of targets) state.tested.add(key.id);
+  state.message = targets.length
+    ? `按到 ${targets.map(key => key.name).join('、')}（${display(keycode)}）`
+    : `按到未映射键 ${hex(keycode)}`;
+  render();
+}
+
+function renderCategories() {
+  const search = byId('search').value.trim();
+  // 搜索时跨全部分类匹配，分类按钮只作提示，不参与筛选。
+  const nodes = categories.map(category => {
+    const tab = button(category.name, () => {
+      state.category = category.id;
+      byId('search').value = '';
+      renderOptions();
+    }, 'category');
+    tab.setAttribute('aria-pressed', !search && state.category === category.id);
+    return tab;
+  });
+  byId('categories').replaceChildren(...nodes);
+}
+
 function renderOptions() {
   const options = choices(layerCount());
   const query = byId('search').value.trim().toLowerCase();
-  const matches = query ? options.filter(option =>
-    `${option.label} ${option.aliases} ${hex(option.code)}`.toLowerCase().includes(query)) : byId('show-all').checked ? options : options.slice(0, 4);
+  // 有搜索词就在全量里找，否则只看当前分类。
+  const matches = query
+    ? options.filter(option => `${option.label} ${option.aliases} ${hex(option.code)}`.toLowerCase().includes(query))
+    : options.filter(option => option.category === state.category);
   const selected = keys.get(state.selected);
   const edit = state.edits.get(editId({ ...selected, layer: state.layer }));
   const blocked = state.busy || (edit && conflict(edit));
   const nodes = matches.map(option => {
     const glyph = option.code === 0xe3 ? '⌘ ' : option.code === 0xe2 ? '⌥ ' : '';
     const item = button(glyph + option.label, () => choose(option.code), 'option');
+    item.title = option.aliases ? `${option.aliases} · ${hex(option.code)}` : hex(option.code);
     item.disabled = blocked;
     return item;
   });
@@ -267,13 +336,23 @@ function renderOptions() {
     empty.textContent = '未找到匹配的键位';
     nodes.push(empty);
   }
+  renderCategories();
   byId('options').replaceChildren(...nodes);
 }
 
+const labelCache = new Map();
+function labelsFor(count) {
+  if (!labelCache.has(count)) labelCache.set(count, new Map(choices(count).map(option => [option.code, option.label])));
+  return labelCache.get(count);
+}
+
+function display(value) {
+  if (!isCode(value)) return '未读取';
+  return deviceBindings.get(value)?.label ?? labelsFor(layerCount()).get(value) ?? `自定义 ${hex(value)}`;
+}
+
 function render() {
-  const labels = new Map(choices(layerCount()).map(option => [option.code, option.label]));
-  const display = value => isCode(value) ?
-    deviceBindings.get(value)?.label ?? labels.get(value) ?? `自定义 ${hex(value)}` : '未读取';
+  const labels = labelsFor(layerCount());
   const status = byId('status');
   status.className = state.connected ? 'online' : '';
   status.textContent = state.busy ? '正在与键盘通信' : state.connected ? '有线已连接' : '离线编辑';
@@ -319,6 +398,8 @@ function render() {
     if (face.textContent !== preview) face.textContent = preview;
     cap.setAttribute('aria-pressed', selected);
     cap.classList.toggle('changed', Boolean(edit));
+    cap.classList.toggle('tested', state.tested.has(id));
+    cap.classList.toggle('pressed', state.test && shown === state.pressed);
     cap.classList.toggle('conflicted', Boolean(edit && conflict(edit)));
     cap.classList.toggle('inherited', !edit && state.layer > 0 && actual === 1);
     const description = shown === undefined ? key.name : `${key.name} · ${display(shown)}`;
@@ -366,7 +447,19 @@ function render() {
 }
 
 byId('search').addEventListener('input', renderOptions);
-byId('show-all').addEventListener('change', renderOptions);
+
+byId('key-test').addEventListener('click', () => {
+  state.test = !state.test;
+  state.pressed = null;
+  if (state.test) state.tested.clear();
+  byId('key-test').setAttribute('aria-pressed', state.test);
+  byId('key-test').textContent = state.test ? '结束测试' : '按键测试';
+  state.message = state.test ? '按下键盘上的键，页面会标记它落在哪颗键上。' : '';
+  render();
+});
+// 测试态在捕获阶段接管，避免页面控件先吃掉按键。
+window.addEventListener('keydown', event => handleTestKey(event, true), true);
+window.addEventListener('keyup', event => handleTestKey(event, false), true);
 byId('device-help').addEventListener('click', () => byId('help').showModal());
 byId('touch-help').addEventListener('click', () => {
   byId('help').showModal();
