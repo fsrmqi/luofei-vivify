@@ -13,43 +13,59 @@ app.whenReady().then(async () => {
     if (level >= 2) console.log('SMOKE console[' + level + '] ' + message);
   });
   await win.loadURL(url);
-  await new Promise(resolve => setTimeout(resolve, 2500));
+  await new Promise(r => setTimeout(r, 2500));
 
-  const result = await win.webContents.executeJavaScript(`(() => {
+  const result = await win.webContents.executeJavaScript(`(async () => {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
     const out = {
-      title: document.title,
-      caps: document.querySelectorAll('.cap').length,
-      tabs: document.querySelectorAll('.tab').length,
       categories: [...document.querySelectorAll('.category')].map(b => b.textContent),
       options: document.querySelectorAll('.option').length,
-      status: document.getElementById('status')?.textContent ?? null,
-      hasTestBtn: Boolean(document.getElementById('key-test'))
+      caps: document.querySelectorAll('.cap').length,
+      hasReset: Boolean(document.getElementById('reset-keyboard')),
+      hasRedo: Boolean(document.getElementById('redo')),
+      hasHistory: Boolean(document.getElementById('history')),
+      hasMacro: Boolean(document.getElementById('macro'))
     };
-    // 切到「媒体」分类看选项是否更新
-    const media = [...document.querySelectorAll('.category')].find(b => b.textContent === '媒体');
-    media?.click();
-    out.mediaOptions = document.querySelectorAll('.option').length;
-    out.mediaActive = [...document.querySelectorAll('.category')].find(b => b.textContent === '媒体')?.getAttribute('aria-pressed');
-    // 搜索应跨分类
-    const search = document.getElementById('search');
-    search.value = '音量';
-    search.dispatchEvent(new Event('input'));
-    out.searchOptions = document.querySelectorAll('.option').length;
-    search.value = '';
-    search.dispatchEvent(new Event('input'));
-    // 进入按键测试，模拟按下 A 与 Caps Lock
-    document.getElementById('key-test').click();
-    out.testOn = document.getElementById('key-test').getAttribute('aria-pressed');
-    const fire = (code) => window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
-    fire('KeyA');
-    out.pressedAfterA = document.querySelectorAll('.cap.pressed').length;
-    out.testedAfterA = document.querySelectorAll('.cap.tested').length;
-    out.msgA = document.getElementById('message').textContent;
-    fire('CapsLock');
-    out.testedAfterCaps = document.querySelectorAll('.cap.tested').length;
-    out.msgCaps = document.getElementById('message').textContent;
-    document.getElementById('key-test').click();
-    out.testOff = document.getElementById('key-test').getAttribute('aria-pressed');
+
+    // 历史：改一颗键 → 撤销 → 重做
+    const capsLock = document.querySelector('[aria-label="Caps Lock"]');
+    capsLock.click();
+    const escOption = [...document.querySelectorAll('.option')].find(b => b.textContent === 'Esc');
+    escOption.click();
+    out.pendingAfterEdit = document.getElementById('changes').textContent;
+    document.getElementById('undo').click();
+    out.afterUndo = document.getElementById('changes').textContent;
+    out.redoEnabled = !document.getElementById('redo').disabled;
+    document.getElementById('redo').click();
+    out.afterRedo = document.getElementById('changes').textContent;
+
+    // 历史对话框
+    document.getElementById('history').click();
+    out.historyItems = document.querySelectorAll('.history-item').length;
+    document.getElementById('history-dialog').close();
+
+    // 宏对话框
+    const macroBtn = document.getElementById('macro');
+    macroBtn.click();
+    await sleep(1200);
+    out.macroDialogOpen = document.getElementById('macro-dialog').open;
+    out.macroSlots = document.querySelectorAll('#macro-slots .category').length;
+
+    // 录制：模拟 ⌘C，应记录 按下⌘ / C / 抬起⌘
+    document.getElementById('macro-record').click();
+    const fire = (code, type) => window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
+    fire('MetaLeft', 'keydown');
+    fire('KeyC', 'keydown');
+    fire('KeyC', 'keyup');
+    fire('MetaLeft', 'keyup');
+    out.chips = [...document.querySelectorAll('.macro-chip')].map(c => c.textContent);
+    out.saveEnabled = !document.getElementById('macro-save').disabled;
+    document.getElementById('macro-record').click();
+
+    // 点掉一个 chip 应减少一步
+    document.querySelector('.macro-chip')?.click();
+    out.chipsAfterRemove = document.querySelectorAll('.macro-chip').length;
+    document.getElementById('macro-dialog').close();
     return out;
   })()`);
   console.log('SMOKE_RESULT ' + JSON.stringify(result));

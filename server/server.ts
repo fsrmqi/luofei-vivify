@@ -88,11 +88,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const status = route === '/api/status' && req.method === 'GET';
   const read = route === '/api/keyboard' && req.method === 'GET';
   const write = route === '/api/keyboard' && req.method === 'POST';
-  if (!session && !status && !read && !write) return json(res, 404, { error: '此地址不存在。' });
+  const reset = route === '/api/reset' && req.method === 'POST';
+  const readMacros = route === '/api/macros' && req.method === 'GET';
+  const writeMacros = route === '/api/macros' && req.method === 'POST';
+  if (!session && !status && !read && !write && !reset && !readMacros && !writeMacros) {
+    return json(res, 404, { error: '此地址不存在。' });
+  }
   if (!via) return relay(req, res, route);
   if (session) return json(res, 200, { token });
-  const { findDevice, isChange, readKeyboard, withDevice, writeChanges } = via;
-  if (req.headers['x-vivify-token'] !== token || (write && req.headers.origin !== `http://${authority}`)) {
+  const { findDevice, isChange, isMacroAction, readKeyboard, withDevice, writeChanges, resetKeymap, readMacros: readMacroSet, writeMacros: writeMacroSet } = via;
+  const mutating = write || reset || writeMacros;
+  if (req.headers['x-vivify-token'] !== token || (mutating && req.headers.origin !== `http://${authority}`)) {
     return json(res, 403, { error: '会话已失效，请刷新页面。' });
   }
   if (busy) return json(res, 409, { error: '正在与键盘通信，请稍后重试。' });
@@ -101,6 +107,22 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   try {
     if (status) return json(res, 200, { detected: Boolean(await findDevice()) });
     if (read) return json(res, 200, { snapshot: await withDevice(readKeyboard) });
+    if (readMacros) return json(res, 200, { macros: await withDevice(readMacroSet) });
+
+    if (reset) {
+      const result = await withDevice(resetKeymap);
+      return result ? json(res, 200, result) : json(res, 409, { error: '键盘已断开，请插线后重试。' });
+    }
+
+    if (writeMacros) {
+      const macros = await readBody(req);
+      if (!Array.isArray(macros) || !macros.every(
+        actions => Array.isArray(actions) && actions.length <= 400 && actions.every(isMacroAction))) {
+        return json(res, 400, { error: '宏内容格式无效。' });
+      }
+      const result = await withDevice(via => writeMacroSet(via, macros));
+      return result ? json(res, 200, { macros: result }) : json(res, 409, { error: '键盘已断开，请插线后重试。' });
+    }
 
     const changes = await readBody(req);
     if (!Array.isArray(changes) || !changes.length || changes.length > 84 * 32 ||

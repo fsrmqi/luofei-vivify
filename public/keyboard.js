@@ -74,8 +74,12 @@ export const categories = [
   { id: 'layer', name: '换层' },
   { id: 'special', name: '特殊' },
   { id: 'numpad', name: '小键盘' },
-  { id: 'mouse', name: '鼠标' }
+  { id: 'mouse', name: '鼠标' },
+  { id: 'macro', name: '宏' }
 ];
+
+// 固件实测提供 16 个宏槽位；绑定键值为 0x7700 + 槽位号。
+export const macroSlots = 16;
 
 const table = [
   // 基础：控制与编辑
@@ -210,7 +214,8 @@ export const mediaLabels = new Map([
   [0xbd, '亮度＋'], [0xbe, '亮度−'], [0x7803, '背光−'], [0x7804, '背光＋'],
   [0xac, '上一曲'], [0xae, '⏯'], [0xab, '下一曲'], [0xa8, '静音'],
   [0xaa, '音量−'], [0xa9, '音量＋'], [0xc1, '控制中心'], [0xc2, '启动台'],
-  [0xbb, '快进'], [0xbc, '快退'], [0xad, '停止'], [0xb0, '弹出']
+  [0xbb, '快进'], [0xbc, '快退'], [0xad, '停止'], [0xb0, '弹出'],
+  ...Array.from({ length: macroSlots }, (_, i) => [0x7700 + i, '宏' + (i + 1)])
 ]);
 
 // 层相关键值按下标生成：MO 按住、TO 切换、TG 锁定、OSL 单次、TT 锁存。
@@ -235,7 +240,13 @@ export function choices(count) {
       });
     }
   }
-  return [...base, ...layers];
+  const macros = Array.from({ length: macroSlots }, (_, i) => ({
+    code: 0x7700 + i,
+    category: 'macro',
+    label: '宏 ' + (i + 1),
+    aliases: 'M' + i + ' MACRO' + (i + 1)
+  }));
+  return [...base, ...layers, ...macros];
 }
 
 export const hex = code => '0x' + code.toString(16).toUpperCase().padStart(4, '0');
