@@ -1,0 +1,7 @@
+name: luofei-vivify
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:4313:4313"
+    restart: unless-stopped
