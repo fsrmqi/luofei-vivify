@@ -9,8 +9,7 @@
     "check": "tsc --noEmit",
     "build:electron": "node scripts/build-electron.mjs",
     "dev": "node scripts/build-electron.mjs && electron .",
-    "package": "node scripts/build-electron.mjs && electron-builder --mac --arm64",
-    "package:dir": "node scripts/build-electron.mjs && electron-builder --mac --arm64 --dir",
+    "package": "node scripts/build-electron.mjs && node scripts/build-dmg.mjs",
     "smoke": "node scripts/build-smoke.mjs && electron dist-electron/smoke.js"
   },
   "engines": {
