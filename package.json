@@ -1,1 +1,33 @@
-{"name":"luofei-vivify","version":"0.1.0","private":true,"type":"module","scripts":{"start":"node server/server.ts","check":"tsc --noEmit"},"engines":{"node":">=22.18"},"dependencies":{"node-hid":"^3.2.0"},"devDependencies":{"@types/node":"^22.0.0","typescript":"^5.9.0"}}
+{
+  "name": "luofei-vivify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "start": "node server/server.ts",
+    "check": "tsc --noEmit",
+    "build:electron": "node scripts/build-electron.mjs",
+    "dev": "node scripts/build-electron.mjs && electron .",
+    "package": "node scripts/build-electron.mjs && electron-builder --mac --arm64",
+    "package:dir": "node scripts/build-electron.mjs && electron-builder --mac --arm64 --dir",
+    "smoke": "node scripts/build-smoke.mjs && electron dist-electron/smoke.js"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "node-hid": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^44.11.5",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0"
+  },
+  "description": "洛斐小顺 Flow 2 (OE927 Mac) 键位编辑器",
+  "author": {
+    "name": "cuijiaqi"
+  }
+}

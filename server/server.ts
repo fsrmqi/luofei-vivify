@@ -1,14 +1,17 @@
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
 
 const container = process.env.VIVIFY_CONTAINER === '1';
-const port = container ? 4313 : Number(process.env.VIVIFY_PORT ?? 4312);
-const authority = `127.0.0.1:${port}`;
-const origin = `http://${authority}`;
 const via = container ? null : await import('./via.ts');
 const token = randomBytes(32).toString('hex');
-const publicRoot = new URL('../public/', import.meta.url);
+/** 静态页面根目录；打包后由主进程注入，命令行运行使用仓库内的 public/。 */
+let publicRoot = fileURLToPath(new URL('../public/', import.meta.url));
+const server = createServer(handle);
+/** 由 listen() 在拿到实际端口后填写，供 Host / Origin 校验使用。 */
+let authority = '';
 const files = new Map([
   ['/', ['index.html', 'text/html']],
   ['/styles.css', ['styles.css', 'text/css']],
@@ -63,7 +66,7 @@ async function relay(req: IncomingMessage, res: ServerResponse, route: string) {
   }
 }
 
-const server = createServer(async (req, res) => {
+async function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
@@ -76,7 +79,7 @@ const server = createServer(async (req, res) => {
   }
   const file = files.get(route);
   if (file && req.method === 'GET') {
-    const data = await readFile(new URL(file[0], publicRoot)).catch(() => null);
+    const data = await readFile(join(publicRoot, file[0])).catch(() => null);
     if (!data) return json(res, 404, { error: '页面文件缺失。' });
     res.writeHead(200, { 'Content-Type': `${file[1]}; charset=utf-8` });
     return res.end(data);
@@ -89,7 +92,7 @@ const server = createServer(async (req, res) => {
   if (!via) return relay(req, res, route);
   if (session) return json(res, 200, { token });
   const { findDevice, isChange, readKeyboard, withDevice, writeChanges } = via;
-  if (req.headers['x-vivify-token'] !== token || (write && req.headers.origin !== origin)) {
+  if (req.headers['x-vivify-token'] !== token || (write && req.headers.origin !== `http://${authority}`)) {
     return json(res, 403, { error: '会话已失效，请刷新页面。' });
   }
   if (busy) return json(res, 409, { error: '正在与键盘通信，请稍后重试。' });
@@ -112,7 +115,34 @@ const server = createServer(async (req, res) => {
   } finally {
     busy = false;
   }
-});
+}
 
-server.requestTimeout = 10_000;
-server.listen(port, container ? '0.0.0.0' : '127.0.0.1', () => console.log(`Flow 2 改键工具  ${origin}`));
+/**
+ * 启动本地服务。
+ * @param port - 端口；传 0 由系统分配空闲端口（Electron 客户端使用）。
+ * @param host - 监听地址，默认仅回环地址。
+ * @param staticRoot - 静态页面目录，打包后由主进程注入。
+ * @returns 实际监听地址与服务地址。
+ */
+export function listen(
+  port = Number(process.env.VIVIFY_PORT ?? 4312),
+  host = container ? '0.0.0.0' : '127.0.0.1',
+  staticRoot?: string
+) {
+  if (staticRoot) publicRoot = staticRoot;
+  server.requestTimeout = 10_000;
+  return new Promise<{ port: number; url: string }>(resolve => {
+    server.listen(port, host, () => {
+      const address = server.address();
+      const actual = typeof address === 'object' && address ? address.port : port;
+      // Host 校验始终以浏览器实际使用的回环地址为准，容器模式下监听地址不同。
+      authority = `127.0.0.1:${actual}`;
+      resolve({ port: actual, url: `http://${authority}` });
+    });
+  });
+}
+
+// 仅 `node server/server.ts` 直接运行时自启；Electron 主进程 import 时由主进程调用 listen()。
+if (!process.versions.electron && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  listen().then(({ url }) => console.log(`Flow 2 改键工具  ${url}`));
+}

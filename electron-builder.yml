@@ -1,0 +1,24 @@
+appId: co.lofree.flow2.vivify
+productName: Flow 2 Keymap
+directories:
+  output: dist
+  buildResources: build
+files:
+  - dist-electron/main.js
+  - public/**
+  - package.json
+# node-hid 是 N-API 原生模块，.node 文件不能从 asar 内加载，必须解包。
+asarUnpack:
+  - "**/node_modules/node-hid/**"
+  - "**/node_modules/pkg-prebuilds/**"
+mac:
+  category: public.app-category.utilities
+  target:
+    - target: dmg
+      arch: [arm64]
+  # 未签名：本地自用即可；对外分发需补 identity 与 notarize。
+  identity: null
+  darkModeSupport: true
+dmg:
+  title: Flow 2 键位编辑器
+  writeUpdateInfo: false

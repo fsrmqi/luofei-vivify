@@ -5,7 +5,14 @@
     "strict": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": [
+      "node"
+    ]
   },
-  "include": ["server/**/*.ts"]
+  "include": [
+    "server/**/*.ts",
+    "electron/**/*.ts",
+    "scripts/**/*.mjs"
+  ]
 }
