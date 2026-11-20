@@ -101,11 +101,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (req.headers['x-vivify-token'] !== token || (mutating && req.headers.origin !== `http://${authority}`)) {
     return json(res, 403, { error: '会话已失效，请刷新页面。' });
   }
+  // 状态查询只枚举 HID 设备、不打开句柄，不占用通信锁，避免轮询挡住写入。
+  if (status) return json(res, 200, { detected: Boolean(await findDevice()) });
   if (busy) return json(res, 409, { error: '正在与键盘通信，请稍后重试。' });
 
   busy = true;
   try {
-    if (status) return json(res, 200, { detected: Boolean(await findDevice()) });
     if (read) return json(res, 200, { snapshot: await withDevice(readKeyboard) });
     if (readMacros) return json(res, 200, { macros: await withDevice(readMacroSet) });
 
