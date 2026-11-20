@@ -147,7 +147,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
  * @returns 实际监听地址与服务地址。
  */
 export function listen(
-  port = Number(process.env.VIVIFY_PORT ?? 4312),
+  // 容器模式下端口固定 4313，与本机命令行模式的 4312 区分。
+  port = container ? 4313 : Number(process.env.VIVIFY_PORT ?? 4312),
   host = container ? '0.0.0.0' : '127.0.0.1',
   staticRoot?: string
 ) {
