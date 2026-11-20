@@ -14,6 +14,12 @@ pnpm dev          # 开发态直接开窗口
 pnpm package      # 打包出 dist/*.dmg
 ```
 
+首次打开如果提示「无法验证该 App」：应用为 ad-hoc 签名、未经 Apple 公证，属于本地自建产物的正常情况。在「系统设置 → 隐私与安全性」里点「仍要打开」，或执行：
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Flow 2 Keymap.app"
+```
+
 ### 命令行 + 浏览器
 
 ```sh
