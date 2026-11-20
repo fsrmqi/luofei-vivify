@@ -8,72 +8,73 @@ const here = dirname(fileURLToPath(import.meta.url));
 app.whenReady().then(async () => {
   const publicDir = join(here, '..', 'public');
   const { url } = await listen(0, '127.0.0.1', publicDir);
-  const win = new BrowserWindow({ show: true, width: 1360, height: 900 });
+  const win = new BrowserWindow({ show: false, width: 1360, height: 900 });
   win.webContents.on('console-message', (_e, level, message) => {
     if (level >= 2) console.log('SMOKE console[' + level + '] ' + message);
   });
   await win.loadURL(url);
   await new Promise(r => setTimeout(r, 2500));
 
-  const result = await win.webContents.executeJavaScript(`(async () => {
+  const phase1 = await win.webContents.executeJavaScript(`(async () => {
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const out = {};
-    // 对话框是否都有统一样式
-    const probe = document.createElement('dialog');
-    document.body.append(probe);
-    probe.showModal();
-    const st = getComputedStyle(probe);
-    out.dialogRadius = st.borderRadius;
-    out.dialogBg = st.backgroundColor;
-    out.dialogShadow = st.boxShadow.slice(0, 30);
-    probe.close();
-    probe.remove();
+    const search = document.getElementById('search');
+    const type = async q => {
+      search.value = q;
+      search.dispatchEvent(new Event('input'));
+      await sleep(40);
+      return [...document.querySelectorAll('.option')].map(b => b.textContent);
+    };
 
-    // 键帽过渡属性
-    const face = document.querySelector('.cap .face');
-    out.faceTransition = getComputedStyle(face).transitionProperty;
+    // 1. 模糊搜索
+    out.cmd = (await type('cmd')).slice(0, 3);
+    out.opt = (await type('opt')).slice(0, 2);
+    out.ctrl = (await type('ctrl')).slice(0, 2);
+    out.subsequence = (await type('bksp')).slice(0, 2);
+    out.chinese = (await type('音量')).slice(0, 2);
+    out.hex = (await type('0x29')).slice(0, 2);
+    search.value = '';
+    search.dispatchEvent(new Event('input'));
+    await sleep(40);
 
-    // 切层动画
-    const bed = document.getElementById('keybed');
-    document.querySelectorAll('.tab')[2].click();
-    out.layerFlipClass = bed.classList.contains('layer-flip');
+    // 2. 层记忆：切到层 3 并保存
+    document.querySelectorAll('.tab')[3].click();
+    await sleep(120);
+    out.activeTab = [...document.querySelectorAll('.tab')].findIndex(t => t.getAttribute('aria-pressed') === 'true');
+    out.storedLayer = JSON.parse(localStorage.getItem('vivify.oe927.v1') || '{}').layer;
 
-    // 选项动画
-    const opts = document.getElementById('options');
-    [...document.querySelectorAll('.category')].find(b => b.textContent === '媒体').click();
-    await sleep(50);
-    out.optionsAnimate = opts.classList.contains('animate');
-    out.firstOptionDelay = document.querySelector('.option').style.animationDelay;
+    // 3. 冲突定位按钮默认隐藏
+    out.jumpHidden = document.getElementById('jump-conflict').hidden;
 
-    out.secondOptionDelay = document.querySelectorAll('.option')[1]?.style.animationDelay;
-
-    // 快捷键 Cmd+Z（先切回基础分类，Esc 在那里）
-    [...document.querySelectorAll('.category')].find(b => b.textContent === '基础').click();
-    await sleep(50);
-    document.querySelector('[aria-label="Caps Lock"]').click();
-    const escBtn = [...document.querySelectorAll('.option')].find(b => b.textContent === 'Esc');
-    out.foundEsc = Boolean(escBtn);
-    escBtn.click();
-    await sleep(50);
-    out.beforeUndo = document.getElementById('changes').textContent;
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', metaKey: true, bubbles: true }));
-    await sleep(60);
-    out.afterCmdZ = document.getElementById('changes').textContent;
-
-    // 确认对话框替代 confirm
-    document.getElementById('reset-keyboard').click();
-    await sleep(400);
-    out.confirmOpen = document.getElementById('confirm-dialog').open;
-    out.confirmTitle = document.getElementById('confirm-title').textContent;
-    out.confirmOkDanger = document.getElementById('confirm-ok').classList.contains('danger');
-    document.getElementById('confirm-cancel').click();
-    await sleep(200);
-    out.confirmClosed = !document.getElementById('confirm-dialog').open;
-
-    // 配色过渡是否注册成功
-    out.keyboardTransition = getComputedStyle(document.getElementById('keyboard')).transitionProperty.includes('--case-light');
+    // 4. 导出快照应包含宏
+    const origCreate = URL.createObjectURL;
+    const origClick = HTMLAnchorElement.prototype.click;
+    let captured = null;
+    URL.createObjectURL = blob => { captured = blob; return 'blob:smoke'; };
+    HTMLAnchorElement.prototype.click = function () {};
+    document.getElementById('export').click();
+    await sleep(1200);
+    URL.createObjectURL = origCreate;
+    HTMLAnchorElement.prototype.click = origClick;
+    if (captured) {
+      const payload = JSON.parse(await captured.text());
+      out.exportHasMacros = Boolean(payload.macros);
+      out.exportMacroCount = payload.macros?.count;
+      out.exportHasLayers = Array.isArray(payload.layers) && payload.layers.length === 6;
+    }
+    out.exportMessage = document.getElementById('message').textContent;
     return out;
   })()`);
-  console.log('SMOKE_RESULT ' + JSON.stringify(result));
+
+  // 5. 重开一个窗口验证层记忆（同 session 共享 localStorage）
+  const win2 = new BrowserWindow({ show: false, width: 1360, height: 900 });
+  await win2.loadURL(url);
+  await new Promise(r => setTimeout(r, 2200));
+  const phase2 = await win2.webContents.executeJavaScript(`(() => ({
+    activeTab: [...document.querySelectorAll('.tab')].findIndex(t => t.getAttribute('aria-pressed') === 'true'),
+    selectedKey: document.getElementById('physical').textContent
+  }))()`);
+
+  console.log('SMOKE_RESULT ' + JSON.stringify({ ...phase1, reload: phase2 }));
   app.quit();
 });

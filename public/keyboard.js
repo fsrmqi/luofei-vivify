@@ -210,6 +210,62 @@ for (const [start, legends] of [
 for (let i = 0; i < 12; i++) table.push([0x3a + i, 'basic', 'F' + (i + 1), '']);
 for (let i = 0; i < 12; i++) table.push([0x68 + i, 'basic', 'F' + (i + 13), '']);
 
+// 补一层口语关键词，让 cmd / ctrl / opt / esc 这类写法也能搜到。
+const extraKeywords = new Map([
+  [0xe3, 'cmd command ⌘ 苹果键 command'], [0xe7, 'cmd command ⌘'],
+  [0xe2, 'opt option alt ⌥'], [0xe6, 'opt option alt ⌥'],
+  [0xe0, 'ctrl control ⌃'], [0xe4, 'ctrl control ⌃'],
+  [0xe1, 'shift ⇧ 上档'], [0xe5, 'shift ⇧'],
+  [0x29, 'escape 退出'], [0x28, 'enter return 回车'], [0x2a, 'backspace 退格'],
+  [0x4c, 'delete del 前向删除'], [0x2b, 'tab'], [0x2c, 'space 空格'],
+  [0x39, 'caps 大写'], [0x46, 'printscreen 截屏'], [0x4b, 'pageup pgup 上翻'],
+  [0x4e, 'pagedown pgdn 下翻'], [0x4a, 'home 行首'], [0x4d, 'end 行尾'],
+  [0xa8, 'mute 静音'], [0xa9, 'volume vol 音量'], [0xaa, 'volume vol 音量']
+]);
+
+// 搜索用的文本：标签、别名、十六进制键值、补充关键词。
+function haystack(option) {
+  return (option.label + ' ' + option.aliases + ' ' + hex(option.code) + ' ' + (extraKeywords.get(option.code) ?? '')).toLowerCase();
+}
+
+// 先按子串命中（词首优先），再退回子序列匹配，这样 "cmd"、"lcmd" 都能找到。
+function fuzzyScore(hay, query) {
+  const direct = hay.indexOf(query);
+  if (direct >= 0) {
+    const wordStart = direct === 0 || /[\s·,，]/.test(hay[direct - 1]);
+    // 整词命中优先于仅前缀命中，否则 "opt" 会把「Option 加左括号」排到「左 Option」前面。
+    const exactWord = hay.split(/[\s·,，]+/).includes(query);
+    return 1000 - direct + (wordStart ? 300 : 0) + (exactWord ? 600 : 0);
+  }
+  let matched = 0;
+  let gaps = 0;
+  let last = -1;
+  for (let i = 0; i < hay.length && matched < query.length; i++) {
+    if (hay[i] === query[matched]) {
+      if (last >= 0) gaps += i - last - 1;
+      last = i;
+      matched++;
+    }
+  }
+  return matched === query.length ? Math.max(1, 240 - gaps) : 0;
+}
+
+/** 按相关度排序的搜索结果；查询为空时返回 null，交给调用方按分类过滤。 */
+export function searchOptions(options, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return null;
+  const scored = [];
+  for (const option of options) {
+    let score = fuzzyScore(haystack(option), q);
+    if (score <= 0) continue;
+    // 输入键名通常是想找那颗真实键，基础分类略微优先，
+    // 避免「Control 加左括号」这类特殊键排在「左 Control」前面。
+    if (option.category === 'basic') score += 120;
+    scored.push({ option, score });
+  }
+  return scored.sort((a, b) => b.score - a.score).map(entry => entry.option);
+}
+
 export const mediaLabels = new Map([
   [0xbd, '亮度＋'], [0xbe, '亮度−'], [0x7803, '背光−'], [0x7804, '背光＋'],
   [0xac, '上一曲'], [0xae, '⏯'], [0xab, '下一曲'], [0xa8, '静音'],

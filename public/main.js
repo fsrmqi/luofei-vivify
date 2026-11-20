@@ -1,4 +1,4 @@
-import { buildLayout, categories, cellIndex, choices, deviceBindings, editId, hex, isCode, isSnapshot, macroSlots, mediaLabels, previewLayerCount } from './keyboard.js';
+import { buildLayout, categories, cellIndex, choices, deviceBindings, editId, hex, isCode, isSnapshot, macroSlots, mediaLabels, previewLayerCount, searchOptions } from './keyboard.js';
 
 const byId = id => document.getElementById(id);
 const storageKey = 'vivify.oe927.v1';
@@ -31,6 +31,10 @@ try {
   }
   if (Array.isArray(saved?.history)) state.history = saved.history.filter(isValidHistoryEntry).slice(-historyLimit);
   if (Array.isArray(saved?.future)) state.future = saved.future.filter(isValidHistoryEntry).slice(-historyLimit);
+  // 记住上次停留的层、选中的键和分类，刷新后接着用。
+  if (Number.isInteger(saved?.layer) && saved.layer >= 0) state.layer = saved.layer;
+  if (typeof saved?.selected === 'string') state.selected = saved.selected;
+  if (categories.some(category => category.id === saved?.category)) state.category = saved.category;
 } catch { /* 本地存储可能受浏览器限制。 */ }
 
 const layout = buildLayout(await fetch('/oe927-mac.json').then(res => res.json()));
@@ -38,12 +42,15 @@ const keys = new Map(layout.flat().map(key => [key.id, key]));
 for (const [id, edit] of state.edits) {
   if (!keys.has(`${edit.row},${edit.col}`)) state.edits.delete(id);
 }
+// 恢复的选中键可能来自旧布局，失效时退回 Caps Lock。
+if (!keys.has(state.selected)) state.selected = '3,0';
 
 function save() {
   try {
     localStorage.setItem(storageKey, JSON.stringify({
       snapshot: state.snapshot, edits: [...state.edits.values()], finish: state.finish,
-      history: state.history, future: state.future
+      history: state.history, future: state.future,
+      layer: state.layer, selected: state.selected, category: state.category
     }));
     return true;
   } catch {
@@ -160,6 +167,7 @@ async function run(task) {
 function selectKey(id) {
   state.selected = id;
   byId('search').value = '';
+  save();
   render();
 }
 
@@ -274,19 +282,49 @@ async function writeKeyboard() {
   });
 }
 
-function exportSnapshot() {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(state.snapshot, null, 2)], { type: 'application/json' }));
+async function exportSnapshot() {
+  if (!state.snapshot || state.busy) return;
+  // 快照同时带上宏，恢复时才能一次还原整套配置。
+  let macros = null;
+  try {
+    macros = (await api('macros')).macros;
+  } catch {
+    // 读不到宏就只导出键位，不阻断主流程。
+  }
+  const payload = macros
+    ? { ...state.snapshot, macros: { count: macros.count, macros: macros.macros } }
+    : state.snapshot;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `flow2-84-${new Date().toISOString().slice(0, 10)}.json`;
+  link.download = 'flow2-84-' + new Date().toISOString().slice(0, 10) + '.json';
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  state.message = macros ? '已导出键位与宏。' : '已导出键位。';
+  render();
+}
+
+function macrosDiffer(mine, theirs) {
+  const normalize = list => list.map(actions => JSON.stringify(actions));
+  const a = normalize(mine ?? []);
+  const b = normalize(theirs ?? []);
+  return a.length !== b.length || a.some((item, index) => item !== b[index]);
+}
+
+function isMacroAction(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (value.type === 'tap' || value.type === 'down' || value.type === 'up') {
+    return Number.isInteger(value.code) && value.code >= 0 && value.code <= 0xff;
+  }
+  if (value.type === 'delay') return Number.isInteger(value.value) && value.value >= 0 && value.value <= 9999;
+  if (value.type === 'text') return typeof value.value === 'string' && value.value.length > 0 && value.value.length <= 200;
+  return false;
 }
 
 async function importSnapshot(file) {
   if (!file || !state.snapshot || state.busy) return;
   try {
-    if (file.size > 200_000) throw new Error('快照文件过大。');
+    if (file.size > 400_000) throw new Error('快照文件过大。');
     const snapshot = JSON.parse(await file.text());
     if (state.busy) throw new Error('正在读取键盘，请稍后重试。');
     if (!isSnapshot(snapshot) || snapshot.layers.length !== layerCount()) {
@@ -310,7 +348,31 @@ async function importSnapshot(file) {
       if (!ok) return;
     }
     if (updates.size) changeEntries(updates, '恢复快照');
-    state.message = updates.size ? '快照差异已载入草稿。' : '快照与当前键位一致。';
+    let note = updates.size ? '键位差异已载入草稿。' : '键位与当前一致。';
+
+    // 快照里带宏时单独确认：宏需要立刻写进键盘，进不了草稿。
+    const incoming = snapshot.macros?.macros;
+    if (Array.isArray(incoming) && incoming.every(actions => Array.isArray(actions) && actions.every(isMacroAction))) {
+      const current = (await api('macros')).macros;
+      if (macrosDiffer(current.macros, incoming)) {
+        const ok = await askConfirm({
+          title: '恢复宏',
+          body: '快照里包含宏，与键盘当前内容不同。现在写入宏吗？该操作会直接覆盖键盘上的宏。',
+          okLabel: '写入宏'
+        });
+        if (ok) {
+          const saved = await api('macros', incoming);
+          state.macros = saved.macros.macros;
+          state.macroDirty = false;
+          note += ' 宏已写入。';
+        } else {
+          note += ' 宏未写入。';
+        }
+      } else {
+        note += ' 宏与键盘一致。';
+      }
+    }
+    state.message = note;
   } catch (error) {
     state.message = error.message;
   }
@@ -535,6 +597,7 @@ function renderCategories() {
     const tab = button(category.name, () => {
       state.category = category.id;
       byId('search').value = '';
+      save();
       renderOptions();
     }, 'category');
     tab.setAttribute('aria-pressed', !search && state.category === category.id);
@@ -546,15 +609,13 @@ function renderCategories() {
 function renderOptions() {
   const options = choices(layerCount());
   const query = byId('search').value.trim().toLowerCase();
-  // 有搜索词就在全量里找，否则只看当前分类。
-  const matches = query
-    ? options.filter(option => `${option.label} ${option.aliases} ${hex(option.code)}`.toLowerCase().includes(query))
-    : options.filter(option => option.category === state.category);
+  // 有搜索词就在全量里按相关度找，否则只看当前分类。
+  const matches = searchOptions(options, query) ?? options.filter(option => option.category === state.category);
   const selected = keys.get(state.selected);
   const edit = state.edits.get(editId({ ...selected, layer: state.layer }));
   const blocked = state.busy || (edit && conflict(edit));
   // 只有选项集合真的变了才播放逐条浮现，否则选区变化时列表会一直闪。
-  const signature = `${state.category}|${query}|${matches.length}`;
+  const signature = `${state.category}|${query}|${matches.length}|${matches[0]?.code ?? ''}`;
   const shouldAnimate = signature !== lastOptionsSignature;
   lastOptionsSignature = signature;
   const container = byId('options');
@@ -612,6 +673,8 @@ function render() {
     const tab = button(layer === 0 ? '基础层' : layer === 1 ? '功能层' : `层 ${layer}`, () => {
       state.layer = layer;
       byId('search').value = '';
+      // 记住停留的层，下次打开接着用。
+      save();
       render();
     }, 'tab');
     tab.setAttribute('aria-pressed', state.layer === layer);
@@ -700,6 +763,11 @@ function render() {
   byId('changes').classList.toggle('dirty', count > 0);
   byId('changes').textContent = count ? `${count} 处待写入${conflicts ? ` · ${conflicts} 处冲突` : ''}` : '没有待写入的修改';
   setText(byId('message'), state.message);
+  // 有冲突时给出定位入口，逐个把视线带到冲突键上。
+  const conflictEdits = [...state.edits.values()].filter(conflict);
+  byId('jump-conflict').hidden = !conflictEdits.length;
+  byId('jump-conflict').textContent = `定位冲突 (${conflictEdits.length})`;
+  byId('jump-conflict').disabled = state.busy;
   byId('undo').disabled = !state.history.length || state.busy;
   byId('redo').disabled = !state.future.length || state.busy;
   byId('history').disabled = state.busy;
@@ -808,6 +876,20 @@ function renderHistoryList() {
   byId('history-list').replaceChildren(...items.reverse());
 }
 
+byId('jump-conflict').addEventListener('click', () => {
+  const conflicted = [...state.edits.values()].filter(conflict);
+  if (!conflicted.length) return;
+  // 从当前选中的键之后开始找，反复点击可以轮转。
+  const order = [...keys.keys()];
+  const from = order.indexOf(state.selected);
+  const target = conflicted
+    .map(edit => ({ edit, at: order.indexOf(`${edit.row},${edit.col}`) }))
+    .sort((a, b) => ((a.at - from + order.length) % order.length) - ((b.at - from + order.length) % order.length))[0];
+  state.layer = target.edit.layer;
+  state.selected = `${target.edit.row},${target.edit.col}`;
+  state.message = `冲突键：${keys.get(state.selected).name}`;
+  render();
+});
 byId('history').addEventListener('click', () => {
   renderHistoryList();
   byId('history-dialog').showModal();
