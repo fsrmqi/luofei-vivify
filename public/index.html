@@ -69,6 +69,17 @@
       </div>
     </footer>
   </div>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog" class="help-header">
+      <h2 id="confirm-title">确认</h2>
+      <button class="quiet">关闭</button>
+    </form>
+    <p class="history-note" id="confirm-body"></p>
+    <div class="macro-controls">
+      <button id="confirm-cancel" class="quiet" type="button">取消</button>
+      <button id="confirm-ok" class="primary" type="button">确认</button>
+    </div>
+  </dialog>
   <dialog id="macro-dialog" aria-labelledby="macro-title">
     <form method="dialog" class="help-header">
       <h2 id="macro-title">宏</h2>

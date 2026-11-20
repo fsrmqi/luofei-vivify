@@ -301,7 +301,14 @@ async function importSnapshot(file) {
         if (before !== after) updates.set(editId(key), { ...key, before, after });
       }
     }
-    if (state.edits.size && !window.confirm('用快照的差异替换当前草稿？')) return;
+    if (state.edits.size) {
+      const ok = await askConfirm({
+        title: '恢复快照',
+        body: '用快照与当前键位的差异替换现有草稿？尚未写入键盘的修改会被覆盖。',
+        okLabel: '替换草稿'
+      });
+      if (!ok) return;
+    }
     if (updates.size) changeEntries(updates, '恢复快照');
     state.message = updates.size ? '快照差异已载入草稿。' : '快照与当前键位一致。';
   } catch (error) {
@@ -359,6 +366,33 @@ function handleTestKey(event, down) {
   render();
 }
 
+
+
+// 用样式化的对话框取代阻塞的 window.confirm。
+function askConfirm({ title, body, okLabel }) {
+  return new Promise(resolve => {
+    const dialog = byId('confirm-dialog');
+    byId('confirm-title').textContent = title;
+    byId('confirm-body').textContent = body;
+    byId('confirm-ok').textContent = okLabel;
+    byId('confirm-ok').classList.toggle('danger', Boolean(okLabel && /重置|删除|清空/.test(okLabel)));
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      byId('confirm-ok').onclick = null;
+      byId('confirm-cancel').onclick = null;
+      dialog.removeEventListener('close', onClose);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onClose = () => finish(false);
+    byId('confirm-ok').onclick = () => finish(true);
+    byId('confirm-cancel').onclick = () => finish(false);
+    dialog.addEventListener('close', onClose);
+    dialog.showModal();
+  });
+}
 
 // ---- 宏编辑 ----
 const isModifier = code => code >= 0xe0 && code <= 0xe7;
@@ -458,7 +492,12 @@ async function saveMacros() {
 
 async function resetKeyboard() {
   if (!state.connected) return;
-  if (!window.confirm('把键盘所有层的键位恢复为出厂默认？当前待写入的修改会先被丢弃。')) return;
+  const ok = await askConfirm({
+    title: '重置键盘',
+    body: '把键盘所有层的键位恢复为出厂默认。当前待写入的草稿与历史记录会一并清空，此操作会直接写入键盘。',
+    okLabel: '确认重置'
+  });
+  if (!ok) return;
   await run(async () => {
     const result = await api('reset', {});
     if (result.unchanged) {
@@ -477,6 +516,16 @@ async function resetKeyboard() {
       ? '已恢复 ' + written + ' 处，' + failed.length + ' 处未成功，请重新读取键盘。'
       : '已恢复出厂键位，共 ' + written + ' 处。';
   });
+}
+
+let lastOptionsSignature = '';
+let lastBindingSignature = '';
+
+// 文本真正变化时才淡入，避免每次渲染都闪一下。
+function setText(element, text) {
+  if (element.textContent === text) return;
+  element.textContent = text;
+  element.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: 'ease-out' });
 }
 
 function renderCategories() {
@@ -504,11 +553,19 @@ function renderOptions() {
   const selected = keys.get(state.selected);
   const edit = state.edits.get(editId({ ...selected, layer: state.layer }));
   const blocked = state.busy || (edit && conflict(edit));
-  const nodes = matches.map(option => {
+  // 只有选项集合真的变了才播放逐条浮现，否则选区变化时列表会一直闪。
+  const signature = `${state.category}|${query}|${matches.length}`;
+  const shouldAnimate = signature !== lastOptionsSignature;
+  lastOptionsSignature = signature;
+  const container = byId('options');
+  container.classList.toggle('animate', shouldAnimate);
+
+  const nodes = matches.map((option, index) => {
     const glyph = option.code === 0xe3 ? '⌘ ' : option.code === 0xe2 ? '⌥ ' : '';
     const item = button(glyph + option.label, () => choose(option.code), 'option');
     item.title = option.aliases ? `${option.aliases} · ${hex(option.code)}` : hex(option.code);
     item.disabled = blocked;
+    if (shouldAnimate) item.style.animationDelay = Math.min(index, 14) * 11 + 'ms';
     return item;
   });
   if (!nodes.length) {
@@ -532,10 +589,23 @@ function display(value) {
   return deviceBindings.get(value)?.label ?? labelsFor(layerCount()).get(value) ?? `自定义 ${hex(value)}`;
 }
 
+// 记录上次渲染的层，用来判断是否要播放切层动画。
+let renderedLayer = null;
+
+function playLayerFlip() {
+  const bed = byId('keybed');
+  bed.classList.remove('layer-flip');
+  // 读取一次布局，强制重排，动画才会重新触发。
+  void bed.offsetWidth;
+  bed.classList.add('layer-flip');
+}
+
 function render() {
   const labels = labelsFor(layerCount());
+  if (renderedLayer !== null && renderedLayer !== state.layer) playLayerFlip();
+  renderedLayer = state.layer;
   const status = byId('status');
-  status.className = state.connected ? 'online' : '';
+  status.className = state.busy ? 'busy online' : state.connected ? 'online' : '';
   status.textContent = state.busy ? '正在与键盘通信' : state.connected ? '有线已连接' : '离线编辑';
   byId('refresh').disabled = state.busy;
   const activeLayers = Array.from({ length: layerCount() }, (_, layer) => {
@@ -592,6 +662,14 @@ function render() {
   const edit = state.edits.get(editId({ ...selected, layer: state.layer }));
   const actual = actualValue(selected);
   const conflicted = Boolean(edit && conflict(edit));
+  const bindingSignature = `${state.selected}|${state.layer}|${actual}|${edit?.after ?? ''}`;
+  if (bindingSignature !== lastBindingSignature) {
+    lastBindingSignature = bindingSignature;
+    const box = byId('before').parentElement;
+    box.classList.remove('flash');
+    void box.offsetWidth;
+    box.classList.add('flash');
+  }
   byId('before').textContent = display(actual);
   const inspected = edit?.after ?? actual;
   const deviceBinding = deviceBindings.get(inspected);
@@ -621,7 +699,7 @@ function render() {
   const conflicts = [...state.edits.values()].filter(conflict).length;
   byId('changes').classList.toggle('dirty', count > 0);
   byId('changes').textContent = count ? `${count} 处待写入${conflicts ? ` · ${conflicts} 处冲突` : ''}` : '没有待写入的修改';
-  byId('message').textContent = state.message;
+  setText(byId('message'), state.message);
   byId('undo').disabled = !state.history.length || state.busy;
   byId('redo').disabled = !state.future.length || state.busy;
   byId('history').disabled = state.busy;
@@ -669,6 +747,39 @@ byId('touch-help').addEventListener('click', () => {
 byId('finish').addEventListener('change', event => { state.finish = event.target.value; save(); render(); });
 byId('refresh').addEventListener('click', readKeyboard);
 byId('apply').addEventListener('click', writeKeyboard);
+
+// ---- 键盘快捷键 ----
+function isTypingTarget(target) {
+  return target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+}
+
+window.addEventListener('keydown', event => {
+  if (event.defaultPrevented) return;
+  // 录制与按键测试有自己的按键处理，不抢。
+  if (state.recording || state.test) return;
+  const meta = event.metaKey || event.ctrlKey;
+  const key = event.key.toLowerCase();
+  if (!meta) return;
+  if (key === 'f') {
+    event.preventDefault();
+    byId('search').focus();
+    byId('search').select();
+    return;
+  }
+  // 输入框里保留浏览器自带的文本撤销。
+  if (isTypingTarget(event.target)) return;
+  if (key === 'z' && !event.shiftKey) {
+    event.preventDefault();
+    undo();
+  } else if ((key === 'z' && event.shiftKey) || key === 'y') {
+    event.preventDefault();
+    redo();
+  } else if (key === 's') {
+    event.preventDefault();
+    if (!byId('apply').disabled) writeKeyboard();
+  }
+}, true);
+
 byId('undo').addEventListener('click', undo);
 byId('redo').addEventListener('click', redo);
 

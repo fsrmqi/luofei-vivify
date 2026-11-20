@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 app.whenReady().then(async () => {
   const publicDir = join(here, '..', 'public');
   const { url } = await listen(0, '127.0.0.1', publicDir);
-  const win = new BrowserWindow({ show: false, width: 1360, height: 900 });
+  const win = new BrowserWindow({ show: true, width: 1360, height: 900 });
   win.webContents.on('console-message', (_e, level, message) => {
     if (level >= 2) console.log('SMOKE console[' + level + '] ' + message);
   });
@@ -17,55 +17,61 @@ app.whenReady().then(async () => {
 
   const result = await win.webContents.executeJavaScript(`(async () => {
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const out = {
-      categories: [...document.querySelectorAll('.category')].map(b => b.textContent),
-      options: document.querySelectorAll('.option').length,
-      caps: document.querySelectorAll('.cap').length,
-      hasReset: Boolean(document.getElementById('reset-keyboard')),
-      hasRedo: Boolean(document.getElementById('redo')),
-      hasHistory: Boolean(document.getElementById('history')),
-      hasMacro: Boolean(document.getElementById('macro'))
-    };
+    const out = {};
+    // 对话框是否都有统一样式
+    const probe = document.createElement('dialog');
+    document.body.append(probe);
+    probe.showModal();
+    const st = getComputedStyle(probe);
+    out.dialogRadius = st.borderRadius;
+    out.dialogBg = st.backgroundColor;
+    out.dialogShadow = st.boxShadow.slice(0, 30);
+    probe.close();
+    probe.remove();
 
-    // 历史：改一颗键 → 撤销 → 重做
-    const capsLock = document.querySelector('[aria-label="Caps Lock"]');
-    capsLock.click();
-    const escOption = [...document.querySelectorAll('.option')].find(b => b.textContent === 'Esc');
-    escOption.click();
-    out.pendingAfterEdit = document.getElementById('changes').textContent;
-    document.getElementById('undo').click();
-    out.afterUndo = document.getElementById('changes').textContent;
-    out.redoEnabled = !document.getElementById('redo').disabled;
-    document.getElementById('redo').click();
-    out.afterRedo = document.getElementById('changes').textContent;
+    // 键帽过渡属性
+    const face = document.querySelector('.cap .face');
+    out.faceTransition = getComputedStyle(face).transitionProperty;
 
-    // 历史对话框
-    document.getElementById('history').click();
-    out.historyItems = document.querySelectorAll('.history-item').length;
-    document.getElementById('history-dialog').close();
+    // 切层动画
+    const bed = document.getElementById('keybed');
+    document.querySelectorAll('.tab')[2].click();
+    out.layerFlipClass = bed.classList.contains('layer-flip');
 
-    // 宏对话框
-    const macroBtn = document.getElementById('macro');
-    macroBtn.click();
-    await sleep(1200);
-    out.macroDialogOpen = document.getElementById('macro-dialog').open;
-    out.macroSlots = document.querySelectorAll('#macro-slots .category').length;
+    // 选项动画
+    const opts = document.getElementById('options');
+    [...document.querySelectorAll('.category')].find(b => b.textContent === '媒体').click();
+    await sleep(50);
+    out.optionsAnimate = opts.classList.contains('animate');
+    out.firstOptionDelay = document.querySelector('.option').style.animationDelay;
 
-    // 录制：模拟 ⌘C，应记录 按下⌘ / C / 抬起⌘
-    document.getElementById('macro-record').click();
-    const fire = (code, type) => window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
-    fire('MetaLeft', 'keydown');
-    fire('KeyC', 'keydown');
-    fire('KeyC', 'keyup');
-    fire('MetaLeft', 'keyup');
-    out.chips = [...document.querySelectorAll('.macro-chip')].map(c => c.textContent);
-    out.saveEnabled = !document.getElementById('macro-save').disabled;
-    document.getElementById('macro-record').click();
+    out.secondOptionDelay = document.querySelectorAll('.option')[1]?.style.animationDelay;
 
-    // 点掉一个 chip 应减少一步
-    document.querySelector('.macro-chip')?.click();
-    out.chipsAfterRemove = document.querySelectorAll('.macro-chip').length;
-    document.getElementById('macro-dialog').close();
+    // 快捷键 Cmd+Z（先切回基础分类，Esc 在那里）
+    [...document.querySelectorAll('.category')].find(b => b.textContent === '基础').click();
+    await sleep(50);
+    document.querySelector('[aria-label="Caps Lock"]').click();
+    const escBtn = [...document.querySelectorAll('.option')].find(b => b.textContent === 'Esc');
+    out.foundEsc = Boolean(escBtn);
+    escBtn.click();
+    await sleep(50);
+    out.beforeUndo = document.getElementById('changes').textContent;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', metaKey: true, bubbles: true }));
+    await sleep(60);
+    out.afterCmdZ = document.getElementById('changes').textContent;
+
+    // 确认对话框替代 confirm
+    document.getElementById('reset-keyboard').click();
+    await sleep(400);
+    out.confirmOpen = document.getElementById('confirm-dialog').open;
+    out.confirmTitle = document.getElementById('confirm-title').textContent;
+    out.confirmOkDanger = document.getElementById('confirm-ok').classList.contains('danger');
+    document.getElementById('confirm-cancel').click();
+    await sleep(200);
+    out.confirmClosed = !document.getElementById('confirm-dialog').open;
+
+    // 配色过渡是否注册成功
+    out.keyboardTransition = getComputedStyle(document.getElementById('keyboard')).transitionProperty.includes('--case-light');
     return out;
   })()`);
   console.log('SMOKE_RESULT ' + JSON.stringify(result));
