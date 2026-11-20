@@ -1,11 +1,10 @@
-import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 
-const container = process.env.VIVIFY_CONTAINER === '1';
-const via = container ? null : await import('./via.ts');
+const via = await import('./via.ts');
 const token = randomBytes(32).toString('hex');
 /** 静态页面根目录；打包后由主进程注入，命令行运行使用仓库内的 public/。 */
 let publicRoot = fileURLToPath(new URL('../public/', import.meta.url));
@@ -33,37 +32,6 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
     if (data.length > 200_000) throw new Error('配置文件超过大小限制。');
   }
   return JSON.parse(data);
-}
-
-async function relay(req: IncomingMessage, res: ServerResponse, route: string) {
-  const write = req.method === 'POST';
-  const headers: Record<string, string> = { Host: '127.0.0.1:4312' };
-  if (write) {
-    if (req.headers.origin !== origin) return json(res, 403, { error: '请从本机页面写入键盘。' });
-    headers.Origin = 'http://127.0.0.1:4312';
-    headers['Content-Type'] = 'application/json';
-  }
-  const session = req.headers['x-vivify-token'];
-  if (typeof session === 'string') headers['x-vivify-token'] = session;
-
-  let body: string | undefined;
-  try {
-    if (write) body = JSON.stringify(await readBody(req));
-  } catch {
-    return json(res, 400, { error: '待写入数据无效或超过大小限制。' });
-  }
-  try {
-    const response = await new Promise<IncomingMessage>((resolve, reject) => {
-      const upstream = request(`http://host.docker.internal:4312${route}`, {
-        method: req.method, headers, signal: AbortSignal.timeout(15_000)
-      }, resolve);
-      upstream.on('error', reject);
-      upstream.end(body);
-    });
-    return json(res, response.statusCode ?? 502, await readBody(response));
-  } catch {
-    return json(res, 503, { error: '无法连接 Mac 键盘服务，请在项目目录运行 pnpm start。' });
-  }
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
@@ -94,7 +62,6 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (!session && !status && !read && !write && !reset && !readMacros && !writeMacros) {
     return json(res, 404, { error: '此地址不存在。' });
   }
-  if (!via) return relay(req, res, route);
   if (session) return json(res, 200, { token });
   const { findDevice, isChange, isMacroAction, readKeyboard, withDevice, writeChanges, resetKeymap, readMacros: readMacroSet, writeMacros: writeMacroSet } = via;
   const mutating = write || reset || writeMacros;
@@ -148,9 +115,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
  * @returns 实际监听地址与服务地址。
  */
 export function listen(
-  // 容器模式下端口固定 4313，与本机命令行模式的 4312 区分。
-  port = container ? 4313 : Number(process.env.VIVIFY_PORT ?? 4312),
-  host = container ? '0.0.0.0' : '127.0.0.1',
+  port = Number(process.env.VIVIFY_PORT ?? 4312),
+  host = '127.0.0.1',
   staticRoot?: string
 ) {
   if (staticRoot) publicRoot = staticRoot;

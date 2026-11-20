@@ -73,10 +73,6 @@ xattr -dr com.apple.quarantine "/Applications/Flow 2 Keymap.app"
 - 第 2 层及以后各层实际做什么，以及有线写入之后切回蓝牙或 2.4 GHz 时键位是否仍然有效，都还需要更多实机核对。
 - 灯光、触控条和厂商自定义菜单没有设置界面，固件也不支持相关查询。键位恢复出厂用页面上的「重置键盘」；硬件级的整体恢复出厂仍按帮助里的组合键在键盘上操作。
 
-## 容器
-
-`Dockerfile` 与 `compose.yaml` 只适合把页面放到容器里。`VIVIFY_CONTAINER=1` 时进程不打开 HID，而是把接口转发到 `http://host.docker.internal:4312`（Docker Desktop、OrbStack 一类环境提供这个主机名）。键盘通信仍要在 macOS 宿主机上先运行 `pnpm start`。
-
 ## 编辑能力
 
 - 键位与层的查看、修改、写入回读，快照导出恢复。
@@ -105,7 +101,6 @@ xattr -dr com.apple.quarantine "/Applications/Flow 2 Keymap.app"
 ## 图标
 
 `build/icon.png` 与 `build/icon.icns` 由 `scripts/make-icon.py` 生成，改配色或形状后重新执行该脚本并用 `iconutil` 重新打包即可。
-`compose.yaml` 把 `127.0.0.1:4313` 映射到容器的 4313，服务进程默认却监听 `VIVIFY_PORT` 或 4312。日常改键直接用上面的 macOS 命令。
 
 ## 许可
 

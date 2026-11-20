@@ -1,6 +1,0 @@
-**
-!Dockerfile
-!server/
-!server/server.ts
-!public/
-!public/**
