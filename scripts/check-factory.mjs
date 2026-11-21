@@ -2,7 +2,7 @@ import HID from 'node-hid';
 import { buildLayout } from '../public/keyboard.js';
 import { readFileSync } from 'node:fs';
 
-const definition = JSON.parse(readFileSync(new URL('../public/oe927-mac.json', import.meta.url)));
+const definition = JSON.parse(readFileSync(new URL('../public/oe927-layout.json', import.meta.url)));
 const layout = buildLayout(definition).flat();
 const { rows, cols } = definition.matrix;
 const cells = rows * cols;

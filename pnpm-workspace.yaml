@@ -3,3 +3,6 @@ onlyBuiltDependencies:
   - electron
   - electron-winstaller
   - esbuild
+
+overrides:
+  "minimatch@>=7 <11.0.1": 11.0.1

@@ -29,25 +29,12 @@ export const protocol = 12;
 export const previewLayerCount = 6;
 
 export function buildLayout(definition) {
-  return definition.layouts.keymap.map((row, index) => {
-    let x = 0;
-    let width = 1;
-    let position = 0;
-    return row.flatMap(item => {
-      if (typeof item === 'object') {
-        x += item.x ?? 0;
-        width = item.w ?? 1;
-        return [];
-      }
-      const [row, col] = item.split(',').map(Number);
-      const legend = capRows[index][position];
-      const printedCode = capCodes[index][position++];
-      const key = { id: item, row, col, x, width, legend, printedCode, name: physicalNames[item] ?? legend };
-      x += width;
-      width = 1;
-      return key;
-    });
-  });
+  return definition.keyRows.map((keys, index) => keys.map((key, position) => {
+    const id = `${key.row},${key.col}`;
+    const legend = capRows[index][position];
+    const printedCode = capCodes[index][position];
+    return { ...key, id, legend, printedCode, name: physicalNames[id] ?? legend };
+  }));
 }
 
 // 厂商键值说明来自 OE927 Mac 手册与实机键位的对照。

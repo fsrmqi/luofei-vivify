@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { app, BrowserWindow } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -17,7 +18,11 @@ app.whenReady().then(async () => {
 
   const phase1 = await win.webContents.executeJavaScript(`(async () => {
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const out = {};
+    const out = {
+      displayedKeys: document.querySelectorAll('.cap').length,
+      finishes: [...document.querySelectorAll('#finish option')].map(option => option.textContent),
+      snapshotAvailable: !document.getElementById('export').disabled
+    };
     const search = document.getElementById('search');
     const type = async q => {
       search.value = q;
@@ -75,6 +80,18 @@ app.whenReady().then(async () => {
     selectedKey: document.getElementById('physical').textContent
   }))()`);
 
+  assert.equal(phase1.displayedKeys, 84);
+  assert.deepEqual(phase1.finishes, ['银色', '深空灰', '晴蓝', '霞粉', '曦黄']);
+  assert.ok(phase1.cmd.length && phase1.opt.length && phase1.ctrl.length && phase1.subsequence.length);
+  assert.ok(phase1.chinese.length && phase1.hex.length);
+  assert.equal(phase1.activeTab, 3);
+  assert.equal(phase1.storedLayer, 3);
+  assert.equal(phase2.activeTab, 3);
+  assert.equal(phase1.jumpHidden, true);
+  if (phase1.snapshotAvailable) assert.equal(phase1.exportHasLayers, true);
   console.log('SMOKE_RESULT ' + JSON.stringify({ ...phase1, reload: phase2 }));
   app.quit();
+}).catch(error => {
+  console.error('界面检查失败', error);
+  app.exit(1);
 });

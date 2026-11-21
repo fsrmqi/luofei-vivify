@@ -1,16 +1,20 @@
 import { execFileSync } from 'node:child_process';
 import { cp, mkdir, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import metadata from '../package.json' with { type: 'json' };
 
 // electron-builder 的 DMG 目标在本机会卡在 dmgbuild 解包，改用 --dir + 系统工具生成。
+if (process.platform !== 'darwin' || process.arch !== 'arm64') {
+  throw new Error('请在 Apple Silicon Mac 上使用 arm64 Node.js 构建 DMG。');
+}
 const name = 'Flow 2 Keymap';
-const version = '0.1.0';
+const { version } = metadata;
 const appPath = join('dist', 'mac-arm64', `${name}.app`);
 const stage = join('dist', 'dmg-stage');
 const dmgPath = join('dist', `${name}-${version}-arm64.dmg`);
 
 console.log('[dmg] 1/4 打包 .app');
-execFileSync(join('node_modules', '.bin', 'electron-builder'), ['--mac', '--arm64', '--dir'], {
+execFileSync(join('node_modules', '.bin', 'electron-builder'), ['--mac', '--arm64', '--dir', '--publish', 'never', '-c.electronDist=node_modules/electron/dist'], {
   stdio: 'inherit',
   env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined }
 });

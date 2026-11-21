@@ -7,11 +7,15 @@ files:
   - dist-electron/main.js
   - public/**
   - package.json
+  - LICENSE
 # node-hid 是 N-API 原生模块，.node 文件不能从 asar 内加载，必须解包。
 asarUnpack:
   - "**/node_modules/node-hid/**"
   - "**/node_modules/pkg-prebuilds/**"
 mac:
+  extraResources:
+    - from: dist-electron/volume-hud
+      to: volume-hud
   category: public.app-category.utilities
   icon: build/icon.icns
   target:

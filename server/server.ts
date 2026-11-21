@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
+import { isAudioChange, macAudio } from './audio.ts';
 
 const via = await import('./via.ts');
 const token = randomBytes(32).toString('hex');
@@ -15,8 +16,9 @@ const files = new Map([
   ['/', ['index.html', 'text/html']],
   ['/styles.css', ['styles.css', 'text/css']],
   ['/main.js', ['main.js', 'text/javascript']],
+  ['/quick-controls.js', ['quick-controls.js', 'text/javascript']],
   ['/keyboard.js', ['keyboard.js', 'text/javascript']],
-  ['/oe927-mac.json', ['oe927-mac.json', 'application/json']]
+  ['/oe927-layout.json', ['oe927-layout.json', 'application/json']]
 ]);
 let busy = false;
 
@@ -25,13 +27,36 @@ function json(res: ServerResponse, status: number, data: unknown) {
   res.end(JSON.stringify(data));
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
-  let data = '';
-  for await (const chunk of req) {
-    data += chunk;
-    if (data.length > 200_000) throw new Error('配置文件超过大小限制。');
+class RequestBodyError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
   }
-  return JSON.parse(data);
+}
+
+async function readBody(req: IncomingMessage): Promise<unknown> {
+  const maxBytes = 200_000;
+  if (Number(req.headers['content-length']) > maxBytes) {
+    req.resume();
+    throw new RequestBodyError('请求超过大小限制。', 413);
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      req.resume();
+      throw new RequestBodyError('请求超过大小限制。', 413);
+    }
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw new RequestBodyError('请求内容不是有效的 JSON。', 400);
+  }
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
@@ -59,21 +84,53 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const reset = route === '/api/reset' && req.method === 'POST';
   const readMacros = route === '/api/macros' && req.method === 'GET';
   const writeMacros = route === '/api/macros' && req.method === 'POST';
-  if (!session && !status && !read && !write && !reset && !readMacros && !writeMacros) {
+  const readBacklight = route === '/api/backlight' && req.method === 'GET';
+  const writeBacklight = route === '/api/backlight' && req.method === 'POST';
+  const readAudio = route === '/api/audio' && req.method === 'GET';
+  const writeAudio = route === '/api/audio' && req.method === 'POST';
+  if (!readBacklight && !writeBacklight && !readAudio && !writeAudio && !session && !status && !read && !write && !reset && !readMacros && !writeMacros) {
     return json(res, 404, { error: '此地址不存在。' });
   }
   if (session) return json(res, 200, { token });
   const { findDevice, isChange, isMacroAction, readKeyboard, withDevice, writeChanges, resetKeymap, readMacros: readMacroSet, writeMacros: writeMacroSet } = via;
-  const mutating = write || reset || writeMacros;
+  const mutating = write || reset || writeMacros || writeBacklight || writeAudio;
   if (req.headers['x-vivify-token'] !== token || (mutating && req.headers.origin !== `http://${authority}`)) {
     return json(res, 403, { error: '会话已失效，请刷新页面。' });
   }
+  if (readAudio || writeAudio) {
+    try {
+      if (readAudio) return json(res, 200, { audio: await macAudio() });
+      const change = await readBody(req);
+      if (!isAudioChange(change)) return json(res, 400, { error: '音量设置无效。' });
+      return json(res, 200, { audio: await macAudio(change) });
+    } catch (error) {
+      if (error instanceof RequestBodyError) return json(res, error.status, { error: error.message });
+      return json(res, 502, { error: '当前 Mac 输出设备的系统音量暂不可用。' });
+    }
+  }
   // 状态查询只枚举 HID 设备、不打开句柄，不占用通信锁，避免轮询挡住写入。
-  if (status) return json(res, 200, { detected: Boolean(await findDevice()) });
+  if (status) {
+    try {
+      return json(res, 200, { detected: Boolean(await findDevice()) });
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : '无法枚举键盘。' });
+    }
+  }
   if (busy) return json(res, 409, { error: '正在与键盘通信，请稍后重试。' });
 
   busy = true;
   try {
+    if (readBacklight || writeBacklight) {
+      let result;
+      if (readBacklight) result = await withDevice(via.readBacklight);
+      else {
+        const change = await readBody(req);
+        if (!via.isBacklightChange(change)) return json(res, 400, { error: '背光设置无效。' });
+        result = await withDevice(device => via.writeBacklight(device, change));
+      }
+      return result ? json(res, 200, { backlight: result }) :
+        json(res, 409, { error: '请将键盘切到有线模式并用 USB 数据线直连。' });
+    }
     if (read) return json(res, 200, { snapshot: await withDevice(readKeyboard) });
     if (readMacros) return json(res, 200, { macros: await withDevice(readMacroSet) });
 
@@ -101,6 +158,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const result = await withDevice(via => writeChanges(via, changes));
     return result ? json(res, 200, result) : json(res, 409, { error: '键盘已断开，请插线后重试。' });
   } catch (error) {
+    if (error instanceof RequestBodyError) return json(res, error.status, { error: error.message });
     return json(res, 502, { error: error instanceof Error ? error.message : String(error) });
   } finally {
     busy = false;
@@ -121,11 +179,13 @@ export function listen(
 ) {
   if (staticRoot) publicRoot = staticRoot;
   server.requestTimeout = 10_000;
-  return new Promise<{ port: number; url: string }>(resolve => {
+  return new Promise<{ port: number; url: string }>((resolve, reject) => {
+    server.once('error', reject);
     server.listen(port, host, () => {
+      server.removeListener('error', reject);
       const address = server.address();
       const actual = typeof address === 'object' && address ? address.port : port;
-      // Host 校验始终以浏览器实际使用的回环地址为准，容器模式下监听地址不同。
+      // Host 校验始终以浏览器实际使用的回环地址为准。
       authority = `127.0.0.1:${actual}`;
       resolve({ port: actual, url: `http://${authority}` });
     });
@@ -134,5 +194,8 @@ export function listen(
 
 // 仅 `node server/server.ts` 直接运行时自启；Electron 主进程 import 时由主进程调用 listen()。
 if (!process.versions.electron && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  listen().then(({ url }) => console.log(`Flow 2 改键工具  ${url}`));
+  listen().then(({ url }) => console.log(`Flow 2 改键工具  ${url}`)).catch(error => {
+    console.error(`启动失败：${error.message}`);
+    process.exitCode = 1;
+  });
 }

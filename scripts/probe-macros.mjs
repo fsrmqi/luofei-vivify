@@ -34,8 +34,6 @@ for (let off = 0; off < bufferSize; off += 28) {
   all.push(...r.buf.subarray(4, 4 + 28));
 }
 console.log('读取字节数:', all.length, '全部 echo 正常:', echoOk);
-const firstMacros = all.slice(0, 64).map(b => b.toString(16).padStart(2, '0')).join(' ');
-console.log('前 64 字节:', firstMacros);
 
 // 统计非零字节数量，判断是否已有宏
 const nonZero = all.filter(b => b !== 0).length;

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { listen } from '../server/server.ts';
@@ -40,8 +40,9 @@ async function createWindow() {
     return { action: 'deny' };
   });
   // 阻止页面被导航到本地服务之外的地址。
+  const origin = new URL(url).origin;
   window.webContents.on('will-navigate', (event, target) => {
-    if (!target.startsWith(url)) event.preventDefault();
+    if (new URL(target).origin !== origin) event.preventDefault();
   });
 
   await window.loadURL(url);
@@ -57,6 +58,9 @@ if (!app.requestSingleInstanceLock()) {
       window.focus();
     }
   });
-  app.whenReady().then(createWindow);
+  app.whenReady().then(createWindow).catch(error => {
+    dialog.showErrorBox('Flow 2 键位编辑器启动失败', error.message);
+    app.quit();
+  });
   app.on('window-all-closed', () => app.quit());
 }

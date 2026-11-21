@@ -18,14 +18,17 @@
         <div class="stage-tools">
           <nav id="layers" aria-label="键盘层"></nav>
           <select id="finish" aria-label="键盘配色">
-            <option value="silver">银色</option><option value="nebula">星云蓝</option>
-            <option value="petal">花瓣粉</option><option value="volt">电光黄</option>
+            <option value="silver">银色</option>
+            <option value="space-gray">深空灰</option>
+            <option value="nebula">晴蓝</option>
+            <option value="petal">霞粉</option>
+            <option value="volt">曦黄</option>
           </select>
         </div>
         <div class="keyboard-scroll">
           <div id="keyboard" class="keyboard" data-finish="silver">
             <div id="keybed" class="keybed"></div>
-            <button id="touch-help" type="button" class="case-edge" aria-label="查看侧边触控条用法"><i aria-hidden="true"></i><span aria-hidden="true">lofree</span></button>
+            <button id="touch-controls" type="button" class="case-edge" aria-label="打开侧边快捷控制" title="快捷控制"><i aria-hidden="true"></i><span aria-hidden="true">lofree</span></button>
           </div>
         </div>
         <div class="stage-footer">
@@ -33,6 +36,7 @@
           <div class="files">
             <button id="key-test" class="quiet" type="button" aria-pressed="false">按键测试</button>
             <button id="macro" class="quiet" type="button">宏</button>
+            <button id="quick-open" class="quiet quick-trigger" type="button">快捷控制</button>
             <button id="device-help" class="quiet" type="button">设备用法</button>
             <button id="export" class="quiet">保存快照</button>
             <button id="import" class="quiet">恢复快照</button>
@@ -95,6 +99,7 @@
       <button id="macro-clear" class="quiet" type="button">清空此槽</button>
       <button id="macro-save" class="primary" type="button" disabled>保存到键盘</button>
     </div>
+    <p id="macro-status" class="quick-status" role="status"></p>
   </dialog>
   <dialog id="history-dialog" aria-labelledby="history-title">
     <form method="dialog" class="help-header">
@@ -103,6 +108,51 @@
     </form>
     <p class="history-note">点击任一步骤可回退到那一步之前。</p>
     <ol id="history-list" class="history-list"></ol>
+  </dialog>
+  <dialog id="quick-dialog" aria-labelledby="quick-title">
+    <form method="dialog" class="help-header">
+      <h2 id="quick-title">快捷控制</h2>
+      <button class="quiet">关闭</button>
+    </form>
+    <section class="quick-section" aria-labelledby="quick-audio-title">
+      <div class="quick-heading">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3Z"/><path d="M16 8a6 6 0 0 1 0 8m3-10a9 9 0 0 1 0 12"/></svg>
+        <h3 id="quick-audio-title"><label for="quick-volume">Mac 音量</label></h3>
+        <output id="quick-volume-value" for="quick-volume">—</output>
+      </div>
+      <div class="quick-row">
+        <input id="quick-volume" class="control-slider" type="range" min="0" max="100" value="0" disabled>
+        <button id="quick-mute" class="quick-mute" type="button" aria-pressed="false" disabled>静音</button>
+      </div>
+      <p id="quick-audio-status" class="quick-status" role="status"></p>
+    </section>
+    <section class="quick-section" aria-labelledby="quick-light-title">
+      <div class="quick-heading">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 16h16M6 20h12M12 4v5M5 7l3 4m11-4-3 4"/></svg>
+        <h3 id="quick-light-title"><label for="quick-level">键盘背光</label></h3>
+        <output id="quick-level-value" for="quick-level">—</output>
+      </div>
+      <input id="quick-level" class="control-slider" type="range" min="0" max="4" step="1" value="0" disabled>
+      <div class="quick-level-marks" aria-hidden="true"><span>关</span><span></span><span></span><span></span><span>最亮</span></div>
+      <div class="quick-effect" role="group" aria-label="背光效果">
+        <button id="quick-steady" type="button" aria-pressed="false" disabled>常亮</button>
+        <button id="quick-breathe" type="button" aria-pressed="false" disabled>呼吸</button>
+      </div>
+      <p id="quick-light-status" class="quick-status" role="status"></p>
+    </section>
+    <div class="quick-hardware">
+      <div><strong>实体触控条</strong><small>开关由键盘控制</small></div>
+      <span><kbd>Fn</kbd> + <kbd>空格</kbd> <small>长按 3 秒</small></span>
+    </div>
+    <footer class="quick-footer">
+      <button id="quick-refresh" type="button" class="quiet">重新读取</button>
+      <button id="quick-help" type="button" class="quiet">实体触控条用法</button>
+    </footer>
+    <div id="volume-feedback" class="volume-feedback" aria-hidden="true" hidden>
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 9v6h4l5 4V5L7 9H3Z"/><path d="M16 8a6 6 0 0 1 0 8m3-10a9 9 0 0 1 0 12"/></svg>
+      <div class="volume-feedback-track"><span></span></div>
+      <span id="volume-feedback-value"></span>
+    </div>
   </dialog>
   <dialog id="help" aria-labelledby="help-title">
     <form method="dialog" class="help-header">

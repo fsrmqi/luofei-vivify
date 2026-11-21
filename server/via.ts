@@ -1,11 +1,18 @@
 import HID from 'node-hid';
-import definition from '../public/oe927-mac.json' with { type: 'json' };
+import definition from '../public/oe927-layout.json' with { type: 'json' };
 import defaultKeymap from '../data/oe927-default-keymap.json' with { type: 'json' };
 
 const { rows, cols } = definition.matrix;
 const cells = rows * cols;
-const visible = new Set(definition.layouts.keymap.flat().filter(key => typeof key === 'string'));
+const visible = new Set(definition.keyRows.flat().map(({ row, col }) => `${row},${col}`));
 const commands = { version: 1, getKey: 4, setKey: 5, layers: 0x11, readBuffer: 0x12 };
+
+const backlight = {
+  get: 0x08, set: 0x07, channel: 1, brightness: 1, effect: 2,
+  readLevels: [0, 63, 127, 191, 255],
+  writeLevels: [0, 64, 128, 192, 255]
+};
+export type BacklightChange = { level: number } | { breathing: boolean };
 
 export type Change = { layer: number; row: number; col: number; before: number; after: number };
 type Result = Change & { status: 'written' | 'conflict' | 'uncertain' | 'pending'; actual?: number };
@@ -79,22 +86,24 @@ class ViaDevice {
     const size = this.macroBufferSize();
     const bytes: number[] = [];
     for (let offset = 0; offset < size; offset += macroChunk) {
-      const chunk = this.exchange(macro.getBuffer, [offset >> 8, offset & 255, macroChunk], 3);
-      bytes.push(...chunk.subarray(4, 4 + Math.min(macroChunk, size - offset)));
+      const length = Math.min(macroChunk, size - offset);
+      const chunk = this.exchange(macro.getBuffer, [offset >> 8, offset & 255, length]);
+      bytes.push(...chunk.subarray(4, 4 + length));
     }
     return { count: this.macroCount(), size, bytes };
   }
 
-  writeMacroBuffer(bytes: number[]) {
-    const last = this.macroBufferSize() - 1;
-    this.exchange(macro.reset, [], 0);
-    // 先把缓冲区最后一字节置 0xff 标记写入中，写完再置 0，与 VIA 的做法一致。
+  writeMacroBuffer(bytes: number[], previous: number[]) {
+    const last = previous.length - 1;
+    if (bytes.every((byte, index) => byte === previous[index])) return;
+    // 明确标记写入中，避免固件执行一份只写了一半的宏。
     this.exchange(macro.setBuffer, [last >> 8, last & 255, 1, 0xff], 3);
-    for (let offset = 0; offset < bytes.length; offset += macroChunk) {
-      const slice = bytes.slice(offset, offset + macroChunk);
+    for (let offset = 0; offset < last; offset += macroChunk) {
+      const slice = bytes.slice(offset, Math.min(offset + macroChunk, last));
+      if (slice.every((byte, index) => byte === previous[offset + index])) continue;
       this.exchange(macro.setBuffer, [offset >> 8, offset & 255, slice.length, ...slice], 3);
     }
-    this.exchange(macro.setBuffer, [last >> 8, last & 255, 1, 0x00], 3);
+    this.exchange(macro.setBuffer, [last >> 8, last & 255, 1, 0], 3);
   }
 }
 
@@ -107,6 +116,41 @@ export async function withDevice<T>(operation: (via: ViaDevice) => T): Promise<T
   } finally {
     try { handle.close(); } catch { /* 设备可能已断开。 */ }
   }
+}
+
+export function isBacklightChange(value: unknown): value is BacklightChange {
+  if (!value || typeof value !== 'object') return false;
+  const { level, breathing } = value as { level?: number; breathing?: boolean };
+  return Object.keys(value).length === 1 &&
+    ((typeof level === 'number' && Number.isInteger(level) && level >= 0 && level <= 4) ||
+      typeof breathing === 'boolean');
+}
+
+export function readBacklight(via: ViaDevice) {
+  via.info();
+  const { channel, brightness, effect } = backlight;
+  const rawLevel = via.exchange(backlight.get, [channel, brightness, 0xfe], 2)[3];
+  const rawEffect = via.exchange(backlight.get, [channel, effect, 0xfe], 2)[3];
+  const level = backlight.readLevels.indexOf(rawLevel);
+  if (level < 0 || (rawEffect !== 0 && rawEffect !== 1)) {
+    throw new Error('键盘返回了未识别的背光状态。');
+  }
+  return { level, breathing: rawEffect === 1 };
+}
+
+export function writeBacklight(via: ViaDevice, change: BacklightChange) {
+  const previous = readBacklight(via);
+  const { channel, brightness, effect, writeLevels } = backlight;
+  if ('level' in change && change.level !== previous.level) {
+    via.exchange(backlight.set, [channel, brightness, writeLevels[change.level]], 2);
+  } else if ('breathing' in change && change.breathing !== previous.breathing) {
+    via.exchange(backlight.set, [channel, effect, Number(change.breathing)], 2);
+  }
+  const actual = readBacklight(via);
+  if ('level' in change ? actual.level !== change.level : actual.breathing !== change.breathing) {
+    throw new Error('背光回读与设置不一致，请重新读取。');
+  }
+  return actual;
 }
 
 export function readKeyboard(via: ViaDevice) {
@@ -172,7 +216,7 @@ export function writeChanges(via: ViaDevice, changes: Change[]) {
 //   0x01 0x03 <键值>              抬起
 //   0x01 0x04 <数字字符...> 0x7c  延时（毫秒）
 //   其他字节                       直接作为字符输入
-const macro = { count: 0x0c, bufferSize: 0x0d, getBuffer: 0x0e, setBuffer: 0x0f, reset: 0x10 };
+const macro = { count: 0x0c, bufferSize: 0x0d, getBuffer: 0x0e, setBuffer: 0x0f };
 const macroChunk = 28;
 const MACRO_PREFIX = 1;
 const MACRO_TAP = 1;
@@ -234,7 +278,7 @@ function encodeMacros(macros: MacroAction[][]): number[] {
         const digits = String(action.value).split('').map(char => char.charCodeAt(0));
         bytes.push(MACRO_PREFIX, MACRO_DELAY, ...digits, MACRO_DELAY_END);
       } else if (action.type === 'text') {
-        for (const char of action.value) bytes.push(char.charCodeAt(0) & 0xff);
+        for (const char of action.value) bytes.push(char.charCodeAt(0));
       }
     }
     bytes.push(0);
@@ -246,10 +290,10 @@ export function isMacroAction(value: unknown): value is MacroAction {
   if (!value || typeof value !== 'object') return false;
   const action = value as MacroAction;
   if (action.type === 'tap' || action.type === 'down' || action.type === 'up') {
-    return Number.isInteger(action.code) && action.code >= 0 && action.code <= 0xff;
+    return Number.isInteger(action.code) && action.code >= 2 && action.code <= 0xff;
   }
   if (action.type === 'delay') return Number.isInteger(action.value) && action.value >= 0 && action.value <= 9999;
-  if (action.type === 'text') return typeof action.value === 'string' && action.value.length > 0 && action.value.length <= 200;
+  if (action.type === 'text') return typeof action.value === 'string' && /^[\x20-\x7e\t\n]{1,200}$/.test(action.value);
   return false;
 }
 
@@ -258,8 +302,9 @@ export function isMacroAction(value: unknown): value is MacroAction {
 export function resetKeymap(via: ViaDevice) {
   const { count } = via.info();
   const target = defaultKeymap.layers;
+  if (count !== target.length) throw new Error('键盘层数与本项目的出厂键位基准不同，无法重置。');
   const changes: Change[] = [];
-  for (let layer = 0; layer < Math.min(count, target.length); layer++) {
+  for (let layer = 0; layer < count; layer++) {
     for (const cell of visible) {
       const [row, col] = cell.split(',').map(Number);
       const after = target[layer][row * cols + col];
@@ -272,17 +317,26 @@ export function resetKeymap(via: ViaDevice) {
 }
 
 export function readMacros(via: ViaDevice): MacroSet {
+  via.info();
   const { count, size, bytes } = via.readMacroBuffer();
+  if (bytes.at(-1) !== 0) throw new Error('检测到上次宏写入中断，请用完整快照重新写入宏。');
   return { count, size, macros: decodeMacros(bytes, count) };
 }
 
-export function writeMacros(via: ViaDevice, macros: MacroAction[][]) {
-  const count = via.macroCount();
-  const size = via.macroBufferSize();
-  if (macros.length > count) throw new Error(`键盘只支持 ${count} 个宏。`);
-  const bytes = encodeMacros(macros.slice(0, count));
-  if (bytes.length > size) throw new Error(`宏共 ${bytes.length} 字节，超出 ${size} 字节缓冲区。`);
-  via.writeMacroBuffer(bytes);
-  // 写完立即读回，前端据回读结果刷新，避免界面与键盘不一致。
-  return readMacros(via);
+export function writeMacros(via: ViaDevice, macros: MacroAction[][]): MacroSet {
+  via.info();
+  const { count, size, bytes: previous } = via.readMacroBuffer();
+  if (macros.length !== count) throw new Error(`需要提供完整的 ${count} 个宏槽位。`);
+  if (!macros.every(actions => actions.every(isMacroAction))) throw new Error('宏键值或文本格式无效。');
+  const bytes = encodeMacros(macros);
+  if (bytes.length >= size) throw new Error(`宏超过可用的 ${size - 1} 字节。`);
+  const expected = bytes.concat(Array<number>(size - bytes.length).fill(0));
+  via.writeMacroBuffer(expected, previous);
+
+  const result = via.readMacroBuffer();
+  if (result.count !== count || result.size !== size ||
+      result.bytes.some((byte, index) => byte !== expected[index])) {
+    throw new Error('宏回读与写入内容不一致，请重新读取。');
+  }
+  return { count, size, macros: decodeMacros(result.bytes, count) };
 }

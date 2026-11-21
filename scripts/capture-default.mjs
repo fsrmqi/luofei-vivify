@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 // 把键盘当前的完整键位抓成默认值文件，用于「重置键盘」。
 // 前提是键盘处于出厂状态；跑前先用 scripts/check-factory.mjs 确认。
-const definition = JSON.parse(readFileSync(new URL('../public/oe927-mac.json', import.meta.url)));
+const definition = JSON.parse(readFileSync(new URL('../public/oe927-layout.json', import.meta.url)));
 const { rows, cols } = definition.matrix;
 const cells = rows * cols;
 

@@ -1,3 +1,4 @@
+import { connectQuickControls } from './quick-controls.js';
 import { buildLayout, categories, cellIndex, choices, deviceBindings, editId, hex, isCode, isSnapshot, macroSlots, mediaLabels, previewLayerCount, searchOptions } from './keyboard.js';
 
 const byId = id => document.getElementById(id);
@@ -24,7 +25,7 @@ function isValidHistoryEntry(entry) {
 try {
   const saved = JSON.parse(localStorage.getItem(storageKey));
   if (isSnapshot(saved?.snapshot)) state.snapshot = saved.snapshot;
-  if (['silver', 'nebula', 'petal', 'volt'].includes(saved?.finish)) state.finish = saved.finish;
+  if ([...byId('finish').options].some(option => option.value === saved?.finish)) state.finish = saved.finish;
   for (const edit of Array.isArray(saved?.edits) ? saved.edits : []) {
     if (edit && Number.isInteger(edit.layer) && edit.layer >= 0 && edit.layer < 32 &&
         isCode(edit.after) && (edit.before === null || isCode(edit.before))) state.edits.set(editId(edit), edit);
@@ -37,7 +38,7 @@ try {
   if (categories.some(category => category.id === saved?.category)) state.category = saved.category;
 } catch { /* 本地存储可能受浏览器限制。 */ }
 
-const layout = buildLayout(await fetch('/oe927-mac.json').then(res => res.json()));
+const layout = buildLayout(await fetch('/oe927-layout.json').then(res => res.json()));
 const keys = new Map(layout.flat().map(key => [key.id, key]));
 for (const [id, edit] of state.edits) {
   if (!keys.has(`${edit.row},${edit.col}`)) state.edits.delete(id);
@@ -314,10 +315,10 @@ function macrosDiffer(mine, theirs) {
 function isMacroAction(value) {
   if (!value || typeof value !== 'object') return false;
   if (value.type === 'tap' || value.type === 'down' || value.type === 'up') {
-    return Number.isInteger(value.code) && value.code >= 0 && value.code <= 0xff;
+    return Number.isInteger(value.code) && value.code >= 2 && value.code <= 0xff;
   }
   if (value.type === 'delay') return Number.isInteger(value.value) && value.value >= 0 && value.value <= 9999;
-  if (value.type === 'text') return typeof value.value === 'string' && value.value.length > 0 && value.value.length <= 200;
+  if (value.type === 'text') return typeof value.value === 'string' && /^[\x20-\x7e\t\n]{1,200}$/.test(value.value);
   return false;
 }
 
@@ -352,12 +353,24 @@ async function importSnapshot(file) {
 
     // 快照里带宏时单独确认：宏需要立刻写进键盘，进不了草稿。
     const incoming = snapshot.macros?.macros;
-    if (Array.isArray(incoming) && incoming.every(actions => Array.isArray(actions) && actions.every(isMacroAction))) {
-      const current = (await api('macros')).macros;
-      if (macrosDiffer(current.macros, incoming)) {
+    if (incoming !== undefined) {
+      if (!Array.isArray(incoming) || incoming.length !== snapshot.macros.count ||
+          !incoming.every(actions => Array.isArray(actions) && actions.every(isMacroAction))) {
+        throw new Error(note + ' 快照中的宏格式无效。');
+      }
+      if (!state.connected) {
+        state.message = note + ' 宏需连接键盘后重新导入。';
+        render();
+        return;
+      }
+      // 中断的宏缓冲区可能无法读取，此时仍允许用户用完整快照恢复。
+      const current = await api('macros').then(data => data.macros, () => null);
+      if (!current || macrosDiffer(current.macros, incoming)) {
         const ok = await askConfirm({
           title: '恢复宏',
-          body: '快照里包含宏，与键盘当前内容不同。现在写入宏吗？该操作会直接覆盖键盘上的宏。',
+          body: current
+            ? '快照里的宏和键盘不同。写入会直接覆盖键盘上的宏。'
+            : '当前宏无法读取。写入完整快照会直接覆盖键盘上的宏。',
           okLabel: '写入宏'
         });
         if (ok) {
@@ -473,6 +486,7 @@ function renderMacroDialog() {
       state.macroSlot = index;
       renderMacroDialog();
     }, 'category');
+    slot.disabled = state.recording;
     slot.setAttribute('aria-pressed', state.macroSlot === index);
     slot.classList.toggle('has-edits', Boolean(state.macros?.[index]?.length));
     return slot;
@@ -493,6 +507,7 @@ function renderMacroDialog() {
         renderMacroDialog();
       }, 'macro-chip');
       chip.dataset.kind = action.type;
+      chip.disabled = state.recording;
       chip.title = '点击删除这一步';
       return chip;
     }));
@@ -501,8 +516,18 @@ function renderMacroDialog() {
   byId('macro-record').setAttribute('aria-pressed', state.recording);
   byId('macro-record').textContent = state.recording ? '停止录制' : '录制';
   byId('macro-save').disabled = !state.macroDirty;
-  byId('macro-step-back').disabled = !actions.length;
-  byId('macro-clear').disabled = !actions.length;
+  byId('macro-step-back').disabled = state.recording || !actions.length;
+  byId('macro-clear').disabled = state.recording || !actions.length;
+}
+
+function finishMacroRecording() {
+  if (!state.recording) return;
+  const actions = state.macros?.[state.macroSlot];
+  if (actions) {
+    for (const code of state.heldMods) actions.push({ type: 'up', code });
+  }
+  state.heldMods = [];
+  state.recording = false;
 }
 
 function recordMacroKey(event, down) {
@@ -514,9 +539,11 @@ function recordMacroKey(event, down) {
   const actions = state.macros[state.macroSlot];
   if (isModifier(code)) {
     if (down) {
+      if (state.heldMods.includes(code)) return;
       state.heldMods.push(code);
       actions.push({ type: 'down', code });
     } else {
+      if (!state.heldMods.includes(code)) return;
       state.heldMods = state.heldMods.filter(mod => mod !== code);
       actions.push({ type: 'up', code });
     }
@@ -528,27 +555,33 @@ function recordMacroKey(event, down) {
 }
 
 async function openMacros() {
+  if (state.busy) return;
+  state.macros = null;
   await run(async () => {
     const { macros } = await api('macros');
+    if (!macros) throw new Error('请连接键盘后再读取宏。');
     state.macros = macros.macros;
     state.macroSlot = 0;
     state.macroDirty = false;
     state.recording = false;
     state.heldMods = [];
   });
+  if (!state.macros) return;
+  byId('macro-status').textContent = '';
   renderMacroDialog();
   byId('macro-dialog').showModal();
 }
 
 async function saveMacros() {
-  if (!state.macros || !state.macroDirty) return;
-  state.recording = false;
+  if (!state.macros || !state.macroDirty || state.busy) return;
+  finishMacroRecording();
   await run(async () => {
     const { macros } = await api('macros', state.macros);
     state.macros = macros.macros;
     state.macroDirty = false;
     state.message = '宏已写入并回读核对。';
   });
+  byId('macro-status').textContent = state.message;
   renderMacroDialog();
 }
 
@@ -562,21 +595,20 @@ async function resetKeyboard() {
   if (!ok) return;
   await run(async () => {
     const result = await api('reset', {});
-    if (result.unchanged) {
-      state.message = '键位已是出厂默认，无需改动。';
+    const written = result.results.filter(item => item.status === 'written').length;
+    const failed = result.results.length - written;
+    const { snapshot } = await api('keyboard');
+    if (!isSnapshot(snapshot)) throw new Error('键盘已断开。草稿已保留，请重连后核对。');
+    if (failed) {
+      reconcile(snapshot);
+      state.message = `已恢复 ${written} 处，有 ${failed} 处未确认，草稿已保留。`;
       return;
     }
-    const written = result.results.filter(item => item.status === 'written').length;
-    const failed = result.results.filter(item => item.status !== 'written');
-    // 重置后设备状态即基准，草稿与历史一并作废。
+    state.snapshot = snapshot;
     state.edits.clear();
     state.history = [];
     state.future = [];
-    const { snapshot } = await api('keyboard');
-    if (isSnapshot(snapshot)) state.snapshot = snapshot;
-    state.message = failed.length
-      ? '已恢复 ' + written + ' 处，' + failed.length + ' 处未成功，请重新读取键盘。'
-      : '已恢复出厂键位，共 ' + written + ' 处。';
+    state.message = result.unchanged ? '键位已是出厂默认，草稿已清空。' : `已恢复出厂键位，共 ${written} 处。`;
   });
 }
 
@@ -791,8 +823,14 @@ window.addEventListener('keydown', event => { handleTestKey(event, true); record
 window.addEventListener('keyup', event => { handleTestKey(event, false); recordMacroKey(event, false); }, true);
 byId('macro').addEventListener('click', openMacros);
 byId('macro-record').addEventListener('click', () => {
-  state.recording = !state.recording;
-  if (!state.recording) state.heldMods = [];
+  if (state.recording) finishMacroRecording();
+  else state.recording = true;
+  renderMacroDialog();
+});
+byId('macro-dialog').addEventListener('close', finishMacroRecording);
+window.addEventListener('blur', () => {
+  if (!state.recording) return;
+  finishMacroRecording();
   renderMacroDialog();
 });
 byId('macro-step-back').addEventListener('click', () => {
@@ -808,10 +846,7 @@ byId('macro-clear').addEventListener('click', () => {
 byId('macro-save').addEventListener('click', saveMacros);
 byId('reset-keyboard').addEventListener('click', resetKeyboard);
 byId('device-help').addEventListener('click', () => byId('help').showModal());
-byId('touch-help').addEventListener('click', () => {
-  byId('help').showModal();
-  byId('touch-section').focus();
-});
+connectQuickControls(api);
 byId('finish').addEventListener('change', event => { state.finish = event.target.value; save(); render(); });
 byId('refresh').addEventListener('click', readKeyboard);
 byId('apply').addEventListener('click', writeKeyboard);
@@ -824,7 +859,7 @@ function isTypingTarget(target) {
 window.addEventListener('keydown', event => {
   if (event.defaultPrevented) return;
   // 录制与按键测试有自己的按键处理，不抢。
-  if (state.recording || state.test) return;
+  if (state.recording || state.test || document.querySelector('dialog[open]')) return;
   const meta = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
   if (!meta) return;
@@ -879,14 +914,14 @@ function renderHistoryList() {
 byId('jump-conflict').addEventListener('click', () => {
   const conflicted = [...state.edits.values()].filter(conflict);
   if (!conflicted.length) return;
-  // 从当前选中的键之后开始找，反复点击可以轮转。
-  const order = [...keys.keys()];
-  const from = order.indexOf(state.selected);
-  const target = conflicted
-    .map(edit => ({ edit, at: order.indexOf(`${edit.row},${edit.col}`) }))
-    .sort((a, b) => ((a.at - from + order.length) % order.length) - ((b.at - from + order.length) % order.length))[0];
-  state.layer = target.edit.layer;
-  state.selected = `${target.edit.row},${target.edit.col}`;
+  const order = new Map([...keys.keys()].map((key, index) => [key, index]));
+  const rank = edit => edit.layer * keys.size + order.get(`${edit.row},${edit.col}`);
+  conflicted.sort((a, b) => rank(a) - rank(b));
+  const current = state.layer * keys.size + order.get(state.selected);
+  const next = conflicted.find(edit => rank(edit) > current) ?? conflicted[0];
+  state.layer = next.layer;
+  state.selected = `${next.row},${next.col}`;
+  save();
   state.message = `冲突键：${keys.get(state.selected).name}`;
   render();
 });

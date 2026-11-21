@@ -1,6 +1,11 @@
 node_modules/
 /.idea/
-/docs/
+/docs/方案.md
 /doc/
 dist/
 dist-electron/
+
+.DS_Store
+.env
+.env.*
+*.local

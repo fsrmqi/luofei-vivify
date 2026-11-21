@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { build } from 'esbuild';
 import { rm } from 'node:fs/promises';
 
@@ -25,3 +26,7 @@ await build({
   }
 });
 console.log('electron main bundled -> dist-electron/main.js');
+
+if (process.platform === 'darwin') {
+  execFileSync('/usr/bin/swiftc', ['server/volume-hud.swift', '-o', 'dist-electron/volume-hud'], { stdio: 'inherit' });
+}
