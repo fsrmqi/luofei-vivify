@@ -135,6 +135,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (readMacros) return json(res, 200, { macros: await withDevice(readMacroSet) });
 
     if (reset) {
+      // 客户端会带 JSON 体，读掉以免与后续 keep-alive 请求错位；内容本身不用。
+      try {
+        await readBody(req);
+      } catch (error) {
+        if (error instanceof RequestBodyError && error.status === 413) throw error;
+      }
       const result = await withDevice(resetKeymap);
       return result ? json(res, 200, result) : json(res, 409, { error: '键盘已断开，请插线后重试。' });
     }

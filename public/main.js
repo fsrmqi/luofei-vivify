@@ -41,10 +41,14 @@ try {
 const layout = buildLayout(await fetch('/oe927-layout.json').then(res => res.json()));
 const keys = new Map(layout.flat().map(key => [key.id, key]));
 for (const [id, edit] of state.edits) {
-  if (!keys.has(`${edit.row},${edit.col}`)) state.edits.delete(id);
+  if (!keys.has(`${edit.row},${edit.col}`) ||
+      (state.snapshot && edit.layer >= state.snapshot.layers.length)) {
+    state.edits.delete(id);
+  }
 }
-// 恢复的选中键可能来自旧布局，失效时退回 Caps Lock。
+// 恢复的选中键可能来自旧布局，失效时退回 Caps Lock；层号夹到当前快照范围内。
 if (!keys.has(state.selected)) state.selected = '3,0';
+if (state.snapshot) state.layer = Math.min(state.layer, state.snapshot.layers.length - 1);
 
 function save() {
   try {
@@ -122,6 +126,10 @@ function reconcile(snapshot) {
   state.snapshot = snapshot;
   state.layer = Math.min(state.layer, snapshot.layers.length - 1);
   for (const [id, edit] of state.edits) {
+    if (edit.layer >= snapshot.layers.length) {
+      state.edits.delete(id);
+      continue;
+    }
     const actual = actualValue(edit, edit.layer);
     if (actual === edit.after) state.edits.delete(id);
     else if (edit.before === null && actual !== undefined) state.edits.set(id, { ...edit, before: actual });
@@ -136,7 +144,8 @@ async function readKeyboard() {
     try {
       ({ snapshot } = await api('keyboard'));
     } catch (error) {
-      wasDetected = true;
+      // 清掉检测缓存，让轮询在设备仍在线时能自动重试，而不是一直跳过。
+      wasDetected = undefined;
       throw error;
     }
     wasDetected = Boolean(snapshot);
@@ -272,13 +281,19 @@ async function writeKeyboard() {
         written++;
       }
     }
-    state.history = [];
-    state.future = [];
+    const complete = !error && results.every(result => result.status === 'written');
+    // 部分写入或冲突时保留历史，方便对剩余草稿继续撤销。
+    if (complete) {
+      state.history = [];
+      state.future = [];
+    }
     if (error) {
       state.connected = false;
       state.message = `已确认 ${written} 处。剩余修改已保留，请重新读取键盘。 ${error}`;
     } else if (results.some(result => result.status === 'conflict')) {
-      state.message = '键盘配置有变动，请处理冲突后重试。';
+      state.message = written
+        ? `已写入 ${written} 处后发现冲突，请处理剩余修改。`
+        : '键盘配置有变动，请处理冲突后重试。';
     } else state.message = `已写入并核对 ${written} 处键位。`;
   });
 }
@@ -287,11 +302,14 @@ async function exportSnapshot() {
   if (!state.snapshot || state.busy) return;
   // 快照同时带上宏，恢复时才能一次还原整套配置。
   let macros = null;
-  try {
-    macros = (await api('macros')).macros;
-  } catch {
-    // 读不到宏就只导出键位，不阻断主流程。
-  }
+  await run(async () => {
+    try {
+      macros = (await api('macros')).macros;
+    } catch {
+      // 读不到宏就只导出键位，不阻断主流程。
+    }
+  });
+  if (!state.snapshot) return;
   const payload = macros
     ? { ...state.snapshot, macros: { count: macros.count, macros: macros.macros } }
     : state.snapshot;
@@ -331,6 +349,15 @@ async function importSnapshot(file) {
     if (!isSnapshot(snapshot) || snapshot.layers.length !== layerCount()) {
       throw new Error('快照的型号、协议或层数与当前布局不匹配。');
     }
+
+    // 先校验宏格式，避免键位草稿已写入后才发现宏无效。
+    const incoming = snapshot.macros?.macros;
+    const hasMacros = incoming !== undefined;
+    if (hasMacros && (!Array.isArray(incoming) || incoming.length !== snapshot.macros.count ||
+        !incoming.every(actions => Array.isArray(actions) && actions.every(isMacroAction)))) {
+      throw new Error('快照中的宏格式无效。');
+    }
+
     const updates = new Map([...state.edits.keys()].map(id => [id, null]));
     for (let layer = 0; layer < layerCount(); layer++) {
       for (const { row, col } of keys.values()) {
@@ -348,23 +375,22 @@ async function importSnapshot(file) {
       });
       if (!ok) return;
     }
+    if (state.busy) throw new Error('正在读取键盘，请稍后重试。');
     if (updates.size) changeEntries(updates, '恢复快照');
     let note = updates.size ? '键位差异已载入草稿。' : '键位与当前一致。';
 
     // 快照里带宏时单独确认：宏需要立刻写进键盘，进不了草稿。
-    const incoming = snapshot.macros?.macros;
-    if (incoming !== undefined) {
-      if (!Array.isArray(incoming) || incoming.length !== snapshot.macros.count ||
-          !incoming.every(actions => Array.isArray(actions) && actions.every(isMacroAction))) {
-        throw new Error(note + ' 快照中的宏格式无效。');
-      }
+    if (hasMacros) {
       if (!state.connected) {
         state.message = note + ' 宏需连接键盘后重新导入。';
         render();
         return;
       }
       // 中断的宏缓冲区可能无法读取，此时仍允许用户用完整快照恢复。
-      const current = await api('macros').then(data => data.macros, () => null);
+      let current = null;
+      await run(async () => {
+        current = await api('macros').then(data => data.macros, () => null);
+      });
       if (!current || macrosDiffer(current.macros, incoming)) {
         const ok = await askConfirm({
           title: '恢复宏',
@@ -374,9 +400,18 @@ async function importSnapshot(file) {
           okLabel: '写入宏'
         });
         if (ok) {
-          const saved = await api('macros', incoming);
-          state.macros = saved.macros.macros;
-          state.macroDirty = false;
+          let wrote = false;
+          await run(async () => {
+            const saved = await api('macros', incoming);
+            state.macros = saved.macros.macros;
+            state.macroDirty = false;
+            wrote = true;
+          });
+          if (!wrote) {
+            state.message = `${note} 宏写入失败：${state.message}`;
+            render();
+            return;
+          }
           note += ' 宏已写入。';
         } else {
           note += ' 宏未写入。';
@@ -416,13 +451,10 @@ function keycodeOf(event) {
   return browserCodes[code];
 }
 
-// 找出当前层里实际输出该键值的物理键。
-function keysProducing(keycode) {
-  return [...keys.values()].filter(key => actualValue(key) === keycode);
-}
-
 function handleTestKey(event, down) {
-  if (!state.test) return;
+  if (!state.test || state.recording || document.querySelector('dialog[open]')) return;
+  // 搜索框等输入控件保留默认键入，不被测试态抢走。
+  if (isTypingTarget(event.target)) return;
   const keycode = keycodeOf(event);
   if (keycode === undefined) return;
   // 测试态下接管按键，避免 Tab 切焦点、空格滚页干扰观察。
@@ -432,7 +464,12 @@ function handleTestKey(event, down) {
     render();
     return;
   }
-  const targets = keysProducing(keycode);
+  // 高亮与命中都按草稿预览值，与键帽当前显示一致。
+  const targets = [...keys.values()].filter(key => {
+    const edit = state.edits.get(editId({ ...key, layer: state.layer }));
+    const shown = edit ? edit.after : actualValue(key);
+    return shown === keycode;
+  });
   state.pressed = keycode;
   for (const key of targets) state.tested.add(key.id);
   state.message = targets.length
@@ -556,6 +593,18 @@ function recordMacroKey(event, down) {
 
 async function openMacros() {
   if (state.busy) return;
+  if (state.macroDirty && state.macros) {
+    const ok = await askConfirm({
+      title: '未保存的宏',
+      body: '当前宏编辑尚未写入键盘。重新打开会丢弃这些改动。',
+      okLabel: '丢弃并重新读取'
+    });
+    if (!ok) {
+      renderMacroDialog();
+      byId('macro-dialog').showModal();
+      return;
+    }
+  }
   state.macros = null;
   await run(async () => {
     const { macros } = await api('macros');
@@ -941,24 +990,30 @@ byId('snapshot-file').addEventListener('change', event => {
 
 render();
 await readKeyboard();
+let polling = false;
 setInterval(async () => {
-  if (state.busy || document.hidden) return;
-  let status;
-  try { status = await api('status'); } catch {
-    wasDetected = undefined;
-    if (state.connected && !state.busy) {
+  if (polling || state.busy || document.hidden) return;
+  polling = true;
+  try {
+    let status;
+    try { status = await api('status'); } catch {
+      wasDetected = undefined;
+      if (state.connected && !state.busy) {
+        state.connected = false;
+        state.message = '本机键盘服务暂不可用，草稿已保留。';
+        render();
+      }
+      return;
+    }
+    if (state.busy || status.detected === wasDetected) return;
+    wasDetected = status.detected;
+    if (status.detected) await readKeyboard();
+    else {
       state.connected = false;
-      state.message = '本机键盘服务暂不可用，草稿已保留。';
+      state.message = '键盘已断开，仍可编辑本地草稿。';
       render();
     }
-    return;
-  }
-  if (state.busy || status.detected === wasDetected) return;
-  wasDetected = status.detected;
-  if (status.detected) await readKeyboard();
-  else {
-    state.connected = false;
-    state.message = '键盘已断开，仍可编辑本地草稿。';
-    render();
+  } finally {
+    polling = false;
   }
 }, 3500);
