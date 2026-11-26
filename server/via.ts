@@ -94,6 +94,9 @@ class ViaDevice {
   }
 
   writeMacroBuffer(bytes: number[], previous: number[]) {
+    if (bytes.length !== previous.length) {
+      throw new Error('宏缓冲区长度与设备不匹配，请重新读取。');
+    }
     const last = previous.length - 1;
     if (bytes.every((byte, index) => byte === previous[index])) return;
     // 明确标记写入中，避免固件执行一份只写了一半的宏。
@@ -188,6 +191,7 @@ export function writeChanges(via: ViaDevice, changes: Change[]) {
   }
   if (results.some(result => result.status === 'conflict')) return { results };
 
+  let written = 0;
   for (const result of results) {
     if (result.status === 'written') continue;
     try {
@@ -195,12 +199,18 @@ export function writeChanges(via: ViaDevice, changes: Change[]) {
       if (before !== result.before) {
         result.actual = before;
         result.status = 'conflict';
-        break;
+        return {
+          results,
+          error: written
+            ? `已写入 ${written} 处后发现冲突，请重新读取后处理剩余修改。`
+            : '键盘配置有变动，请处理冲突后重试。'
+        };
       }
       via.writeKey(result);
       result.actual = via.readKey(result);
       if (result.actual !== result.after) throw new Error('回读键值与待写入值不同。');
       result.status = 'written';
+      written++;
     } catch (error) {
       result.status = 'uncertain';
       return { results, error: error instanceof Error ? error.message : String(error) };
@@ -247,12 +257,23 @@ function decodeMacros(bytes: number[], count: number): MacroAction[][] {
       const action = bytes[++i];
       const code = bytes[++i] ?? 0;
       if (action === MACRO_DELAY) {
+        // 延时以 0x7c 结束；遇到宏终止符 0x00 则回退一格，交给外层收槽。
         const digits = [String.fromCharCode(code)];
-        while (++i < bytes.length && bytes[i] !== MACRO_DELAY_END) digits.push(String.fromCharCode(bytes[i]));
+        while (++i < bytes.length && bytes[i] !== MACRO_DELAY_END) {
+          if (bytes[i] === 0) {
+            i--;
+            break;
+          }
+          digits.push(String.fromCharCode(bytes[i]));
+        }
+        if (i >= bytes.length || bytes[i] !== MACRO_DELAY_END) {
+          throw new Error('宏延时编码不完整，请用完整快照重新写入宏。');
+        }
         current.push({ type: 'delay', value: Number(digits.join('')) || 0 });
       } else if (action === MACRO_TAP) current.push({ type: 'tap', code });
       else if (action === MACRO_DOWN) current.push({ type: 'down', code });
       else if (action === MACRO_UP) current.push({ type: 'up', code });
+      else throw new Error(`宏含有未识别的动作码 ${action}，请用完整快照重新写入宏。`);
     } else {
       const chars = [String.fromCharCode(byte)];
       while (i + 1 < bytes.length && bytes[i + 1] !== 0 && bytes[i + 1] !== MACRO_PREFIX) chars.push(String.fromCharCode(bytes[++i]));
@@ -329,7 +350,8 @@ export function writeMacros(via: ViaDevice, macros: MacroAction[][]): MacroSet {
   if (macros.length !== count) throw new Error(`需要提供完整的 ${count} 个宏槽位。`);
   if (!macros.every(actions => actions.every(isMacroAction))) throw new Error('宏键值或文本格式无效。');
   const bytes = encodeMacros(macros);
-  if (bytes.length >= size) throw new Error(`宏超过可用的 ${size - 1} 字节。`);
+  // 末字节既是最后一个宏终止符，也是写入完成标志；刚好写满 size 是合法的。
+  if (bytes.length > size) throw new Error(`宏超过可用的 ${size} 字节。`);
   const expected = bytes.concat(Array<number>(size - bytes.length).fill(0));
   via.writeMacroBuffer(expected, previous);
 

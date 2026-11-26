@@ -42,7 +42,11 @@ async function createWindow() {
   // 阻止页面被导航到本地服务之外的地址。
   const origin = new URL(url).origin;
   window.webContents.on('will-navigate', (event, target) => {
-    if (new URL(target).origin !== origin) event.preventDefault();
+    try {
+      if (new URL(target).origin !== origin) event.preventDefault();
+    } catch {
+      event.preventDefault();
+    }
   });
 
   await window.loadURL(url);
